@@ -8070,31 +8070,25 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/net_namespace.h linux-4.10.7/include/net/net_namespace.h
 --- linux-4.10.7-orig/include/net/net_namespace.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/net/net_namespace.h	2017-06-08 12:38:00.230407949 +0200
-@@ -39,11 +39,22 @@
++++ linux-4.10.7/include/net/net_namespace.h	2017-06-28 16:28:37.199060585 +0200
+@@ -39,11 +39,16 @@
  struct net_generic;
  struct sock;
  struct netns_ipvs;
-+struct pvd;
++struct pvd;	/* anonymous */
  
  
  #define NETDEV_HASHBITS    8
  #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
  
 +#ifdef	CONFIG_NETPVD
-+
-+/*
-+ * MAXPVD must be a power of 2
-+ */
-+#define	MAXPVDSHIFT	10	/* realistic upper bound */
-+#define	MAXPVD		(1 << MAXPVDSHIFT)
-+
++#include <linux/pvd-user.h>
 +#endif
 +
  struct net {
  	atomic_t		passive;	/* To decided when the network
  						 * namespace should be freed.
-@@ -83,6 +94,40 @@
+@@ -83,6 +88,42 @@
  	int			ifindex;
  	unsigned int		dev_unreg_count;
  
@@ -8127,18 +8121,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/net_namespace.h linu
 +	unsigned int		pvd_unreg_count;
 +
 +	void			*pvd_cached_ra;
++
++	struct timer_list	pvd_timer;
 +#ifdef CONFIG_PROC_FS
 +	struct proc_dir_entry	*proc_pvdd;
 +#endif
-+#endif
++#endif	/* CONFIG_NETPVD */
 +
  	/* core fib_rules */
  	struct list_head	rules_ops;
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/include/net/pvd.h
 --- linux-4.10.7-orig/include/net/pvd.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/net/pvd.h	2017-06-09 10:42:30.556115299 +0200
-@@ -0,0 +1,177 @@
++++ linux-4.10.7/include/net/pvd.h	2017-06-29 18:17:40.634852464 +0200
+@@ -0,0 +1,197 @@
 +
 +#ifndef	_NET_PVD_H
 +#define	_NET_PVD_H
@@ -8151,12 +8147,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +#include <linux/list.h>
 +#include <linux/rculist.h>
 +
-+#define	PVDNAMSIZ	1024	/* TODO : check exactly what it should be */
-+
-+#define	MAXADDRPERPVD	32
-+#define	MAXROUTESPERPVD	32
-+
-+#include <net/pvd-user.h>
++#include <linux/pvd-user.h>
 +
 +/*
 + * In the net_pvd structure below, the pvdindex and
@@ -8175,8 +8166,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +	int __percpu		*pcpu_refcnt;
 +	u32			pvdindex;	/* unique number */
 +	int			_index;		/* index in net->pvd_used_slots */
-+	// int			type;		/* V6/V4 */
-+	// int			flags;		/* implicit/explicit */
++	int			notifications_blocked;
 +
 +	/*
 +	 * Attributes of the pvd
@@ -8185,7 +8175,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +	int			h_flag;
 +	int			l_flag;
 +
-+	unsigned long		expires;	/* lifetime field */
++	unsigned long		lifetime;	/* lifetime field */
++	unsigned long		expires;	/* jiffies + lifetime */
 +
 +	/*
 +	 * Lot of cross references to other structures belonging to
@@ -8200,6 +8191,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +	struct rt6_info		*routes[MAXROUTESPERPVD];
 +	int			naddresses;
 +	struct inet6_ifaddr	*addresses[MAXADDRPERPVD];
++	
++	/*
++	 * The user options below have no existence somewhere
++	 * in the kernel. They are just stored here to
++	 * be provided to the applications
++	 */
++	int			ndnssl;
++	char			*dnssl[MAXDNSSLPERPVD];
++	unsigned long		dnsslExpire[MAXDNSSLPERPVD];
++
++
++	int			nrdnss;
++	struct in6_addr		rdnss[MAXRDNSSPERPVD];
++	unsigned long		rdnssExpire[MAXRDNSSPERPVD];
 +
 +#ifdef CONFIG_NETPVD
 +	/*
@@ -8214,6 +8219,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +	struct proc_dir_entry 	*proc_pvd_attrs;	/* file */
 +	struct proc_dir_entry 	*proc_pvd_routes;	/* file */
 +	struct proc_dir_entry 	*proc_pvd_addrs;	/* file */
++	struct proc_dir_entry 	*proc_pvd_rdnss;	/* file */
++	struct proc_dir_entry 	*proc_pvd_dnssl;	/* file */
 +	struct proc_dir_entry 	*proc_pvd_sockets;	/* file */
 +#endif
 +};
@@ -8274,6 +8281,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +	write_pnet(&pvd->nd_net, net);
 +}
 +
++extern void	pvd_rtnl_notify(struct net_pvd *pvd, int state);
++extern void	pvd_register_dnssl(struct net_pvd *pvd, void *dnssl_opt);
++extern void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt);
 +extern void	pvd_add_cached_ra(
 +		struct net *net, 
 +		char *pvd,	/* if NULL, consider lla instead */
@@ -8301,6 +8311,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +				int __user *optlen, int len);
 +extern int sock_setbindtopvd(struct sock *sk, char __user *optval,
 +				int optlen);
++extern int sock_getpvdattr(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len);
++
 +extern int sock_getpvdinfo(
 +		struct sock *sk,
 +		char __user *optval,
@@ -8316,83 +8332,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +#endif		/* CONFIG_NETPVD */
 +
 +#endif		/* _NET_PVD_H */
-diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd-user.h linux-4.10.7/include/net/pvd-user.h
---- linux-4.10.7-orig/include/net/pvd-user.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/net/pvd-user.h	2017-06-01 15:37:06.849391664 +0200
-@@ -0,0 +1,73 @@
-+/*
-+ * This header file contains definitions for use when exchanging
-+ * data with the user space
-+ */
-+#ifndef	_NET_PVD_USER_H
-+#define	_NET_PVD_USER_H
-+
-+#ifndef	PVDNAMSIZ
-+#define	PVDNAMSIZ	1024
-+#endif
-+
-+/*
-+ * For SO_GETPVDINFO
-+ */
-+struct net_pvd_attribute {
-+	char			name[PVDNAMSIZ];
-+	int			index;	/* unique number */
-+
-+	/*
-+	 * Attributes of the pvd
-+	 */
-+	int			sequence_number;
-+	int			h_flag;
-+	int			l_flag;
-+
-+	unsigned long		expires;	/* lifetime field */
-+};
-+
-+struct pvd_list {
-+	int npvd;	/* in/out */
-+	struct net_pvd_attribute pvds[MAXPVD];
-+};
-+
-+/*
-+ * For SO_GETRALIST
-+ */
-+#define	_RALIST_HEADER \
-+	int	size;		/* total structure size */\
-+	int	buffer_size;	/* depends on max_ras */\
-+	char	*buffer;	/* allocated */\
-+	int	nra;		/* output */\
-+	int	max_ras;
-+
-+struct ra_buffer {
-+	int		ra_size;
-+	unsigned char	*ra;
-+	int		ifindex;
-+	struct in6_addr	saddr;
-+};
-+
-+struct ra_list {
-+	_RALIST_HEADER
-+	struct ra_buffer array[0];	/* variable size : [max_ras] */
-+	/* array will be followed by a buffer */
-+};
-+
-+/*
-+ * For SO_BINDTOPVD (set and get)
-+ */
-+#define	MAXBOUNDPVD	32
-+
-+#define	PVD_BIND_SCOPE_SOCKET	0
-+#define	PVD_BIND_SCOPE_THREAD	1
-+#define	PVD_BIND_SCOPE_PROCESS	2
-+
-+struct bind_to_pvd {
-+	int scope;
-+	int npvd;	/* in/out */
-+	char pvdnames[MAXBOUNDPVD][PVDNAMSIZ];
-+};
-+
-+
-+#endif		/* _NET_PVD_USER_H */
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/include/net/sock.h
 --- linux-4.10.7-orig/include/net/sock.h	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/include/net/sock.h	2017-05-16 11:27:31.524931823 +0200
@@ -8426,18 +8365,262 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/
  #define sk_net			__sk_common.skc_net
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/asm-generic/socket.h linux-4.10.7/include/uapi/asm-generic/socket.h
 --- linux-4.10.7-orig/include/uapi/asm-generic/socket.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/uapi/asm-generic/socket.h	2017-06-01 13:39:52.981517627 +0200
-@@ -94,4 +94,10 @@
++++ linux-4.10.7/include/uapi/asm-generic/socket.h	2017-06-27 11:09:41.022550508 +0200
+@@ -94,4 +94,11 @@
  
  #define SCM_TIMESTAMPING_OPT_STATS	54
  
 +#ifdef	CONFIG_NETPVD
 +#define	SO_BINDTOPVD		55
 +#define	SO_GETPVDINFO		56
-+#define	SO_GETRALIST		57
++#define	SO_GETPVDATTRIBUTES	57
++#define	SO_GETRALIST		58
 +#endif
 +
  #endif /* __ASM_GENERIC_SOCKET_H */
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/Kbuild linux-4.10.7/include/uapi/linux/Kbuild
+--- linux-4.10.7-orig/include/uapi/linux/Kbuild	2017-03-30 09:44:36.000000000 +0200
++++ linux-4.10.7/include/uapi/linux/Kbuild	2017-06-26 12:05:19.762149057 +0200
+@@ -352,6 +352,7 @@
+ header-y += psci.h
+ header-y += ptp_clock.h
+ header-y += ptrace.h
++header-y += pvd-user.h
+ header-y += qnx4_fs.h
+ header-y += qnxtypes.h
+ header-y += quota.h
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h linux-4.10.7/include/uapi/linux/pvd-user.h
+--- linux-4.10.7-orig/include/uapi/linux/pvd-user.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-4.10.7/include/uapi/linux/pvd-user.h	2017-06-30 10:24:39.563132881 +0200
+@@ -0,0 +1,191 @@
++/*
++ * This header file contains definitions for use when exchanging
++ * data with the user space
++ *
++ * The same file will also be installed for use by user space
++ * applications
++ *
++ * SO_GETPVDINFO, SO_BINDTOPVD and SO_GETRALIST are defined in
++ * another uapi header file (asm-generic/socket.h)
++ */
++#ifndef	_NET_PVD_USER_H
++#define	_NET_PVD_USER_H
++
++#include <linux/in6.h>
++#ifndef __KERNEL__
++#include <net/if.h>
++#else
++#include <linux/if.h>
++#endif
++
++/*
++ * MAXPVD must be a power of 2
++ */
++#define	MAXPVDSHIFT	10	/* realistic upper bound */
++#define	MAXPVD		(1 << MAXPVDSHIFT)
++
++#ifndef	PVDNAMSIZ
++#define	PVDNAMSIZ	256
++#endif
++
++#ifndef	FQDNSIZ
++#define	FQDNSIZ		256
++#endif
++
++#ifndef MAXADDRPERPVD
++#define	MAXADDRPERPVD	32
++#endif
++
++#ifndef MAXROUTESPERPVD
++#define	MAXROUTESPERPVD	32
++#endif
++
++#ifndef	MAXDNSSLPERPVD
++#define	MAXDNSSLPERPVD	4
++#endif
++
++#ifndef	MAXRDNSSPERPVD
++#define	MAXRDNSSPERPVD	4
++#endif
++
++/*
++ * For SO_GETPVDINFO (which returns in one call all pvd and
++ * their attributes) or SO_GETPVDATTRIBUTES (which returns
++ * the attributes for a given PvD)
++ *
++ * The net_pvd_attribute structure below is a copy of the
++ * kernel space pvd structure, with kernel specific items
++ * removed
++ */
++struct net_pvd_route {
++	struct in6_addr	dst;
++	struct in6_addr gateway;
++	char dev_name[IFNAMSIZ];
++};
++
++struct net_pvd_attribute {
++	char			name[PVDNAMSIZ];
++	int			index;	/* unique number */
++
++	/*
++	 * Attributes of the pvd
++	 */
++	int			sequence_number;
++	int			h_flag;
++	int			l_flag;
++
++	unsigned long		expires;	/* lifetime field */
++
++	/*
++	 * Induced attributes
++	 */
++	int			nroutes;
++	struct net_pvd_route	routes[MAXROUTESPERPVD];
++	int			naddresses;
++	struct in6_addr		addresses[MAXADDRPERPVD];
++	int			addr_prefix_len[MAXADDRPERPVD];
++
++	int			ndnssl;
++	char			dnssl[MAXDNSSLPERPVD][FQDNSIZ];
++
++	int			nrdnss;
++	struct in6_addr		rdnss[MAXRDNSSPERPVD];
++};
++
++struct pvd_list {
++	int npvd;	/* in/out */
++	char pvds[MAXPVD][PVDNAMSIZ];
++};
++
++struct pvd_attr {
++	char __user *pvdname;	/* in */
++	struct net_pvd_attribute *pvdattr;	/* out */
++};
++
++/*
++ * For SO_GETRALIST
++ */
++#define	_RALIST_HEADER \
++	int	size;		/* total structure size */\
++	int	buffer_size;	/* depends on max_ras */\
++	char	*buffer;	/* allocated */\
++	int	nra;		/* output */\
++	int	max_ras;
++
++struct ra_buffer {
++	int		ra_size;
++	unsigned char	*ra;
++	int		ifindex;
++	struct in6_addr	saddr;
++};
++
++struct ra_list {
++	_RALIST_HEADER
++	struct ra_buffer array[0];	/* variable size : [max_ras] */
++	/* array will be followed by a buffer */
++};
++
++/*
++ * For SO_BINDTOPVD (set and get)
++ */
++#define	MAXBOUNDPVD	32	/* 1 practically after discussions */
++
++#define	PVD_BIND_SCOPE_SOCKET	0
++#define	PVD_BIND_SCOPE_THREAD	1
++#define	PVD_BIND_SCOPE_PROCESS	2
++
++struct bind_to_pvd {
++	int scope;
++	int npvd;	/* in/out */
++	char pvdnames[MAXBOUNDPVD][PVDNAMSIZ];
++};
++
++
++/*
++ * RTNETLINK related definitions
++ */
++/********************************************************************
++ *		PvD description
++ *		This is used to notify a change in a PvD
++ *		Application may then query the attributes for the
++ *		notified PvD using an alternate API
++ ****/
++
++struct pvdmsg {
++	char	pvd_name[PVDNAMSIZ];
++	int	pvd_state;	/* NEW, UPDATE, DEL */
++};
++
++enum {
++	/*
++	 * PVD_NEW and PVD_UPDATE will certainly be handled in the same way
++	 * by application
++	 */
++	PVD_NEW,
++	PVD_UPDATE,
++	PVD_DEL
++};
++
++struct rdnssmsg {
++	char	pvd_name[PVDNAMSIZ];
++	struct in6_addr	rdnss;
++	int		rdnss_state;	/* NEW, DEL */
++};
++
++enum {
++	RDNSS_NEW,
++	RDNSS_DEL
++};
++
++struct dnsslmsg {
++	char	pvd_name[PVDNAMSIZ];
++	char	dnssl[FQDNSIZ];
++	int	dnssl_state;	/* NEW, DEL */
++};
++
++enum {
++	DNSSL_NEW,
++	DNSSL_DEL
++};
++
++#endif		/* _NET_PVD_USER_H */
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/rtnetlink.h linux-4.10.7/include/uapi/linux/rtnetlink.h
+--- linux-4.10.7-orig/include/uapi/linux/rtnetlink.h	2017-03-30 09:44:36.000000000 +0200
++++ linux-4.10.7/include/uapi/linux/rtnetlink.h	2017-06-29 17:51:25.138844849 +0200
+@@ -7,6 +7,8 @@
+ #include <linux/if_addr.h>
+ #include <linux/neighbour.h>
+ 
++#include <linux/pvd-user.h>
++
+ /* rtnetlink families. Values up to 127 are reserved for real address
+  * families, values above 128 may be used arbitrarily.
+  */
+@@ -144,6 +146,13 @@
+ 	RTM_GETSTATS = 94,
+ #define RTM_GETSTATS RTM_GETSTATS
+ 
++	RTM_PVDSTATUS = 96,
++#define RTM_PVDSTATUS RTM_PVDSTATUS
++	RTM_RDNSS = 97,
++#define RTM_RDNSS RTM_RDNSS
++	RTM_DNSSL = 98,
++#define RTM_DNSSL RTM_DNSSL
++
+ 	__RTM_MAX,
+ #define RTM_MAX		(((__RTM_MAX + 3) & ~3) - 1)
+ };
+@@ -657,6 +666,10 @@
+ #define RTNLGRP_MPLS_ROUTE	RTNLGRP_MPLS_ROUTE
+ 	RTNLGRP_NSID,
+ #define RTNLGRP_NSID		RTNLGRP_NSID
++
++	RTNLGRP_PVD,
++#define RTNLGRP_PVD		RTNLGRP_PVD
++
+ 	__RTNLGRP_MAX
+ };
+ #define RTNLGRP_MAX	(__RTNLGRP_MAX - 1)
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/kernel/configs/kvm_guest.config linux-4.10.7/kernel/configs/kvm_guest.config
 --- linux-4.10.7-orig/kernel/configs/kvm_guest.config	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/kernel/configs/kvm_guest.config	2017-05-03 12:31:37.914492332 +0200
@@ -8494,8 +8677,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/Makefile linux-4.10.7/n
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/core/pvd.c
 --- linux-4.10.7-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/net/core/pvd.c	2017-06-09 18:28:58.059307883 +0200
-@@ -0,0 +1,1551 @@
++++ linux-4.10.7/net/core/pvd.c	2017-06-30 12:09:37.763163321 +0200
+@@ -0,0 +1,2234 @@
 +/*
 + */
 +
@@ -8508,6 +8691,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +#include <linux/percpu.h>
 +#include <linux/hash.h>
 +#include <linux/list.h>
++#include <linux/timer.h>
 +#include <linux/rculist.h>
 +#include <linux/proc_fs.h>
 +#include <linux/seq_file.h>
@@ -8530,7 +8714,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +#include <net/ip6_route.h>
 +
 +#include <net/pvd.h>
-+#include <net/pvd-user.h>
++#include <linux/pvd-user.h>
 +
 +#ifdef	CONFIG_NETPVD
 +
@@ -8540,7 +8724,27 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +#define	_TABIDX(f)	((f) & ((1 << MAXPVDSHIFT) - 1))
 +#define	_UNIQIDX(f)	(((f) >> MAXPVDSHIFT) & (MAXPVDINDEX - 1))
 +
++struct nd_opt_rdnss_info {
++	uint8_t nd_opt_rdnssi_type;
++	uint8_t nd_opt_rdnssi_len;
++	uint16_t nd_opt_rdnssi_pref_flag_reserved;
++	uint32_t nd_opt_rdnssi_lifetime;
++	struct in6_addr nd_opt_rdnssi_addr1;
++	struct in6_addr nd_opt_rdnssi_addr2;
++	struct in6_addr nd_opt_rdnssi_addr3;
++};
++
++struct nd_opt_dnssl_info {
++	uint8_t nd_opt_dnssli_type;
++	uint8_t nd_opt_dnssli_len;
++	uint16_t nd_opt_dnssli_reserved;
++	uint32_t nd_opt_dnssli_lifetime;
++	unsigned char nd_opt_dnssli_suffixes[];
++};
++
 +static seqcount_t pvd_rename_seq;
++
++static void pvd_check_lifetimes(unsigned long arg);
 +
 +static char *addrtostr(struct in6_addr const *addr, char *str)
 +{
@@ -8563,6 +8767,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +{
 +	int i;
 +
++	setup_timer(&net->pvd_timer, pvd_check_lifetimes, (unsigned long) net);
++
 +	net->pvdindex = 0;
 +
 +	for (i = 0; i < MAXPVD; i++) {
@@ -8577,6 +8783,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +static void __net_exit netpvd_exit(struct net *net)
 +{
++	del_timer_sync(&net->pvd_timer);
 +}
 +
 +static struct pernet_operations __net_initdata netpvd_net_ops = {
@@ -8610,17 +8817,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +static int pvd_attrs_seq_show(struct seq_file *seq, void *v)
 +{
-+	struct net_pvd *pvd = (struct net_pvd *)seq->private;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
 +	rcu_read_lock();
 +
 +	seq_printf(
 +		seq,
-+		"seq=%d h=%s l=%s expires=%lu index=%lu\n",
++		"seq=%d h=%s l=%s lifetime=%lu index=%lu\n",
 +		pvd->sequence_number,
 +		pvd->h_flag ? "true" : "false",
 +		pvd->l_flag ? "true" : "false",
-+		(unsigned long) pvd->expires,
++		(unsigned long) pvd->lifetime,
 +		(unsigned long) pvd_get_fullindex(pvd));
 +
 +	rcu_read_unlock();
@@ -8644,7 +8851,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +static int pvd_routes_seq_show(struct seq_file *seq, void *v)
 +{
 +	int i;
-+	struct net_pvd *pvd = (struct net_pvd *)seq->private;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
 +	rcu_read_lock();
 +
@@ -8701,7 +8908,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +static int pvd_addrs_seq_show(struct seq_file *seq, void *v)
 +{
 +	int i;
-+	struct net_pvd *pvd = (struct net_pvd *)seq->private;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
 +	rcu_read_lock();
 +
@@ -8730,6 +8937,68 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +static const struct file_operations pvd_addrs_seq_fops = {
 +	.owner	 = THIS_MODULE,
 +	.open	 = pvd_addrs_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_rdnss_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->nrdnss; i++) {
++		char sAddr[64];
++
++		seq_printf(seq, "%3d : %s\n", 
++			   i,
++			   addrtostr(&pvd->rdnss[i], sAddr));
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_rdnss_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_rdnss_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_rdnss_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_rdnss_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_dnssl_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->ndnssl; i++) {
++		seq_printf(seq, "%3d :  %s\n", i, pvd->dnssl[i]);
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_dnssl_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_dnssl_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_dnssl_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_dnssl_seq_open,
 +	.read	 = seq_read,
 +	.llseek	 = seq_lseek,
 +	.release = single_release,
@@ -8789,6 +9058,22 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +		return -ENOENT;
 +	}
 +
++	if ((pvd->proc_pvd_rdnss = proc_create_data(
++					"rdnss", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_rdnss_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_dnssl = proc_create_data(
++					"dnssl", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_dnssl_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
 +	if ((pvd->proc_pvd_sockets = proc_create_data(
 +					"sockets", S_IRUGO,
 +					pvd->proc_pvd,
@@ -8813,6 +9098,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	pvd->proc_pvd_attrs = NULL;
 +	pvd->proc_pvd_routes = NULL;
 +	pvd->proc_pvd_addrs = NULL;
++	pvd->proc_pvd_rdnss = NULL;
++	pvd->proc_pvd_dnssl = NULL;
 +	pvd->proc_pvd_sockets = NULL;
 +
 +	return 0;
@@ -8820,7 +9107,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +static int netpvd_seq_show(struct seq_file *seq, void *v)
 +{
-+	struct net *net = (struct net *)seq->private;
++	struct net *net = (struct net *) seq->private;
 +	struct net_pvd *pvd;
 +
 +	rtnl_lock();
@@ -8829,12 +9116,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	for (pvd = net->first_used_pvd; pvd; pvd = pvd->next) {
 +		seq_printf(
 +			seq,
-+			"name=%s seq=%d h=%s l=%s expires=%lu index=%lu\n",
++			"name=%s seq=%d h=%s l=%s lifetime=%lu index=%lu\n",
 +			pvd->name,
 +			pvd->sequence_number,
 +			pvd->h_flag ? "true" : "false",
 +			pvd->l_flag ? "true" : "false",
-+			(unsigned long) pvd->expires,
++			(unsigned long) pvd->lifetime,
 +			(unsigned long) pvd_get_fullindex(pvd));
 +	}
 +
@@ -8881,6 +9168,129 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	.exit = netpvd_proc_exit,
 +};
 +#endif
++
++/*
++ * Netlink related functions
++ */
++void	pvd_rtnl_notify(struct net_pvd *pvd, int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct pvdmsg *pvdmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct pvdmsg));
++
++	if (pvd->notifications_blocked) {
++		return;
++	}
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_PVDSTATUS, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	pvdmsg = nlmsg_data(nlh);
++	pvdmsg->pvd_state = state;
++	strcpy(pvdmsg->pvd_name, pvd->name);
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
++
++void	rdnss_rtnl_notify(
++		struct net_pvd *pvd,
++		struct in6_addr *rdnss,
++		int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct rdnssmsg *rdnssmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct rdnssmsg));
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_RDNSS, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	rdnssmsg = nlmsg_data(nlh);
++	rdnssmsg->rdnss_state = state;
++	strcpy(rdnssmsg->pvd_name, pvd->name);
++	memcpy(&rdnssmsg->rdnss, rdnss, sizeof(rdnssmsg->rdnss));
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
++
++void	dnssl_rtnl_notify(
++		struct net_pvd *pvd,
++		char *dnssl,
++		int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct dnsslmsg *dnsslmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct dnsslmsg));
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_DNSSL, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	dnsslmsg = nlmsg_data(nlh);
++	dnsslmsg->dnssl_state = state;
++	strcpy(dnsslmsg->pvd_name, pvd->name);
++	strcpy(dnsslmsg->dnssl, dnssl);
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
 +
 +/*
 + * pvd_migrate_route : some routes are created via RA
@@ -8992,14 +9402,25 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	}
 +#endif
 +
++	/*
++	 * Note that notifications below (pvd_rtnl_notify) may result in
++	 * multiple notifications when routes are deleted (or added)
++	 * The applications may react to each of these notifications by
++	 * requesting the pvd attributes : this is unfortunate. We
++	 * may want to coalesce these notifications (by using a timer
++	 * maybe), or, lazy we are, give the applications some guidelines
++	 * to implement their own timer before requesting the attributes
++	 */
 +	if (oldpvd != NULL) {
 +		printk("pvd_migrate_route : oldpvd : %d routes present\n",
 +			oldpvd->nroutes);
++		pvd_rtnl_notify(oldpvd, PVD_UPDATE);
 +	}
 +
 +	if (newpvd != NULL) {
 +		printk("pvd_migrate_route : newpvd : %d routes present\n",
 +			newpvd->nroutes);
++		pvd_rtnl_notify(newpvd, PVD_UPDATE);
 +	}
 +
 +	rcu_read_unlock();
@@ -9115,16 +9536,207 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	if (oldpvd != NULL) {
 +		printk("pvd_migrate_addr : oldpvd : %d addresses present\n",
 +			oldpvd->naddresses);
++		pvd_rtnl_notify(oldpvd, PVD_UPDATE);
 +	}
 +
 +	if (newpvd != NULL) {
 +		printk("pvd_migrate_addr : newpvd : %d addresses present\n",
 +			newpvd->naddresses);
++		pvd_rtnl_notify(newpvd, PVD_UPDATE);
 +	}
 +
 +	rcu_read_unlock();
 +
 +	return(rc);
++}
++
++/*
++ * pvd_register_rdnss : given a RDNSS option, registers it. This means
++ * checking if each address it defines is already registered. We also
++ * handle a lifetime == 0 to delete RDNSS entries
++ */
++static void pvd_register_one_rdnss(
++			struct net_pvd *pvd,
++			struct in6_addr *ina, 
++			unsigned long lifetime)
++{
++	int i, j;
++
++	for (i = 0; i < pvd->nrdnss; i++) {
++		if (memcmp(&pvd->rdnss[i], ina, sizeof(*ina)) == 0) {
++			/*
++			 * Update its lifetime (or delete it if lifetime == 0)
++			 */
++			if (lifetime == 0) {
++				rdnss_rtnl_notify(pvd, &pvd->rdnss[i], RDNSS_DEL);
++
++				for (j = i + 1; j < pvd->nrdnss; j++) {
++					pvd->rdnssExpire[j - 1] = pvd->rdnssExpire[j];
++					pvd->rdnss[j - 1] = pvd->rdnss[j];
++				}
++				pvd->nrdnss--;
++			}
++			else {
++				pvd->rdnssExpire[i] =
++					lifetime == (unsigned long) 0xFFFFFFFF ?
++						-1UL :
++						jiffies / HZ + lifetime;
++			}
++			return;
++		}
++	}
++
++	if (lifetime == 0) {
++		return;
++	}
++
++	if (pvd->nrdnss < MAXRDNSSPERPVD) {
++		pvd->rdnss[pvd->nrdnss] = *ina;
++		pvd->rdnssExpire[pvd->nrdnss] =
++			lifetime == (unsigned long) 0xFFFFFFFF ?
++				-1UL : 
++				jiffies / HZ + lifetime;
++
++		rdnss_rtnl_notify(pvd, &pvd->rdnss[pvd->nrdnss], RDNSS_NEW);
++
++		pvd->nrdnss++;
++	}
++}
++
++void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt)
++{
++	struct nd_opt_rdnss_info *rdnssi = (struct nd_opt_rdnss_info *) rdnss_opt;
++	int count = rdnssi->nd_opt_rdnssi_len;
++
++	rcu_read_lock();
++
++	switch (count) {
++		case 7 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr3,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			/* FALLTHROUGH */
++		case 5 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr2,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			/* FALLTHROUGH */
++		case 3 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr1,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			break;
++	}
++
++	rcu_read_unlock();
++}
++
++/*
++ * pvd_register_dnssl : register a DNSSL blob (we should really parse each
++ * FQDN name defined in the option)
++ */
++static void pvd_register_one_dnssl(
++			struct net_pvd *pvd,
++			char *dns_name,
++			unsigned long lifetime)
++{
++	int i, j;
++
++	for (i = 0; i < pvd->ndnssl; i++) {
++		if (strcmp(pvd->dnssl[i], dns_name) == 0) {
++			/*
++			 * Update its lifetime (or delete it if lifetime == 0)
++			 */
++			if (lifetime == 0) {
++				dnssl_rtnl_notify(pvd, pvd->dnssl[i], DNSSL_DEL);
++
++				kfree(pvd->dnssl[i]);
++				for (j = i + 1; j < pvd->ndnssl; j++) {
++					pvd->dnsslExpire[j - 1] = pvd->dnsslExpire[j];
++					pvd->dnssl[j - 1] = pvd->dnssl[j];
++				}
++				pvd->ndnssl--;
++			}
++			else {
++				pvd->dnsslExpire[i] =
++					lifetime == (unsigned long) 0xFFFFFFFF ?
++						-1UL :
++						jiffies / HZ + lifetime;
++			}
++			return;
++		}
++	}
++
++	if (lifetime == 0) {
++		return;
++	}
++
++	if (pvd->ndnssl < MAXDNSSLPERPVD) {
++		if ((pvd->dnssl[pvd->ndnssl] = kstrdup(dns_name, GFP_KERNEL)) == NULL) {
++			return;
++		}
++		pvd->dnsslExpire[pvd->ndnssl] =
++			lifetime == (unsigned long) 0xFFFFFFFF ?
++				-1UL :
++				jiffies / HZ + lifetime;
++
++		dnssl_rtnl_notify(pvd, pvd->dnssl[pvd->ndnssl], DNSSL_NEW);
++
++		pvd->ndnssl++;
++	}
++}
++
++void	pvd_register_dnssl(struct net_pvd *pvd, void *dnssl_opt)
++{
++	struct nd_opt_dnssl_info *dnssli = (struct nd_opt_dnssl_info *) dnssl_opt;
++	int offset;
++	int offset_max = (dnssli->nd_opt_dnssli_len - 1) * 8;
++	char suffix[256];
++
++	suffix[0] = '\0';
++
++	rcu_read_lock();
++
++	for (offset = 0; offset < offset_max;) {
++		int label_len = dnssli->nd_opt_dnssli_suffixes[offset++];
++
++		if (label_len == 0) {
++			/*
++			 * Ignore empty suffixes
++			 */
++			if (suffix[0] == '\0')
++				continue;
++
++			/*
++			 * We have a complete FQDN : register it or update its
++			 * lifetime
++			 */
++			pvd_register_one_dnssl(
++					pvd, 
++					suffix,
++					ntohl(dnssli->nd_opt_dnssli_lifetime));
++
++			suffix[0] = '\0';
++			continue;
++		}
++
++		if ((sizeof(suffix) - strlen(suffix)) < (label_len + 2)) {
++			printk("oversized suffix in DNSSL option\n");
++			break;
++		}
++
++		if (suffix[0] != '\0')
++			strcat(suffix, ".");
++		strncat(suffix,
++			(char *) &dnssli->nd_opt_dnssli_suffixes[offset],
++			label_len);
++		offset += label_len;
++	}
++
++	rcu_read_unlock();
 +}
 +
 +/*
@@ -9138,7 +9750,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +struct net_pvd_cached_ra {
 +	int ra_size;
 +	void *ra_payload;
-+	char *pvd;	/* if NULL, consider ll below */
++	char *pvd;	/* if NULL, consider lla below */
 +	struct in6_addr lla;
 +	int ifindex;
 +	struct net_pvd_cached_ra *next;
@@ -9254,6 +9866,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 + * via a raw netlink socket
 + *
 + * It returns the number of entries stored in the output array
++ *
++ * USERLAND ABI
 + */
 +int sock_getralist(
 +		struct sock *sk,
@@ -9356,6 +9970,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 + * The socket option argument is a handle to a pointer and
 + * not a pointer to the actual structure (the bind_to_pvd
 + * structure is too large to be copied on the kernel stack)
++ *
++ * USERLAND ABI
 + */
 +int sock_setbindtopvd(
 +		struct sock *sk,
@@ -9512,8 +10128,180 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +}
 +
 +/*
++ * _sock_getpvdattr : fill in a user net_pvd_attribute structure
++ * Called by both sock_getpvdinfo (returns the attributes for all
++ * the PvD) and sock_getpvdattr (returns the attributes for one given
++ * PvD)
++ */
++static int _sock_getpvdattr(
++		struct net_pvd *pvd, 
++		struct net_pvd_attribute *pvdattr)
++{
++	int	l;
++	int	i;
++	int	ret;
++
++	/*
++	 * First, the attributes extracted from the
++	 * pvd option header
++	 */
++	if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++		l = PVDNAMSIZ - 1;
++	}
++	ret = -EFAULT;
++	if (copy_to_user(pvdattr->name, pvd->name, l + 1)) {
++		goto out;
++	}
++	put_user(pvd->sequence_number, &pvdattr->sequence_number);
++	put_user(pvd->h_flag, &pvdattr->h_flag);
++	put_user(pvd->l_flag, &pvdattr->l_flag);
++	put_user(pvd->lifetime, &pvdattr->expires);
++	put_user(pvd_get_fullindex(pvd), &pvdattr->index);
++
++	/*
++	 * Now, the attributes induced from the RA carrying this PvD
++	 *
++	 * Addresses allocated from prefixes
++	 * Routes
++	 * User options :
++	 * 	DNSSL
++	 * 	RDNSS
++	 */
++	put_user(pvd->naddresses, &pvdattr->naddresses);
++	for (i = 0; i < pvd->naddresses; i++) {
++		if (copy_to_user(
++			&pvdattr->addresses[i],
++			&pvd->addresses[i]->addr,
++			sizeof(pvdattr->addresses[i]))) {
++				goto out;
++		}
++		put_user(
++			pvd->addresses[i]->prefix_len,
++			&pvdattr->addr_prefix_len[i]);
++	}
++
++	/*
++	 * The routes
++	 */
++	put_user(pvd->nroutes, &pvdattr->nroutes);
++	for (i = 0; i < pvd->nroutes; i++) {
++		static struct in6_addr NullAddr;
++		static char lNullDevName[IFNAMSIZ] = { 0 };
++
++		struct rt6_info *rt = pvd->routes[i];
++		struct net_pvd_route *urt = &pvdattr->routes[i];
++
++		memset(&NullAddr, 0, sizeof(NullAddr));
++
++		if (copy_to_user(
++			&urt->dst,
++			&rt->rt6i_dst.addr,
++			sizeof(urt->dst))) {
++			goto out;
++		}
++
++		if (copy_to_user(
++			&urt->gateway,
++			(rt->rt6i_flags & RTF_GATEWAY) ?
++				&rt->rt6i_gateway :
++				&NullAddr,
++			sizeof(urt->gateway))) {
++			goto out;
++		}
++
++		if (copy_to_user(
++			urt->dev_name,
++			rt->dst.dev ? rt->dst.dev->name : lNullDevName, IFNAMSIZ)) {
++			goto out;
++		}
++	}
++
++	/*
++	 * The RDNSS/DNSSL attributes
++	 */
++	put_user(pvd->nrdnss, &pvdattr->nrdnss);
++	for (i = 0; i < pvd->nrdnss; i++) {
++		if (copy_to_user(
++				&pvdattr->rdnss[i],
++				&pvd->rdnss[i],
++				sizeof(pvdattr->rdnss[i]))) {
++			goto out;
++		}
++	}
++
++	put_user(pvd->ndnssl, &pvdattr->ndnssl);
++	for (i = 0; i < pvd->ndnssl; i++) {
++		if ((l = strlen(pvd->dnssl[i])) > FQDNSIZ) {
++			goto out;
++		}
++		if (copy_to_user(
++				pvdattr->dnssl[i],
++				pvd->dnssl[i],
++				l + 1)) {
++			goto out;
++		}
++	}
++
++	ret = 0;
++
++out :
++	return ret;
++}
++
++/*
++ * sock_getpvdattr : return the attributes for a given PvD
++ *
++ * USERLAND ABI
++ */
++int sock_getpvdattr(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len)
++{
++	int ret = -ENOPROTOOPT;
++	struct net *net = sock_net(sk);
++	struct pvd_attr pva;
++	char pvdname[PVDNAMSIZ];
++	struct net_pvd *pvd;
++	int l;
++
++	if (len != sizeof(struct pvd_attr)) {
++		return -EINVAL;
++	}
++
++	if (copy_from_user(&pva, optval, len)) {
++		return -EFAULT;
++	}
++
++	l = strncpy_from_user(pvdname, pva.pvdname, PVDNAMSIZ - 1);
++
++	if (l < 0 || l == PVDNAMSIZ - 1) {
++		return l < 0 ? l : -EINVAL;
++	}
++
++	if (l == 0) {
++		return -EINVAL;	/* empty name */
++	}
++
++	rtnl_lock();
++
++	for (pvd = net->first_used_pvd;
++	     pvd != NULL && strcmp(pvd->name, pvdname) != 0;
++	     pvd = pvd->next);
++
++	ret = pvd ? _sock_getpvdattr(pvd, pva.pvdattr) : -ENOENT;
++
++	rtnl_unlock();
++
++	return ret;
++}
++
++/*
 + * sock_getpvdinfo : return the full list of currently registered
 + * pvds, with their attributes
++ *
++ * USERLAND ABI
 + */
 +int sock_getpvdinfo(
 +		struct sock *sk,
@@ -9524,62 +10312,55 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	int ret = -ENOPROTOOPT;
 +	struct net *net = sock_net(sk);
 +	struct pvd_list __user *pvl;
-+	struct net_pvd_attribute __user *pvdattr;
 +	struct net_pvd *pvd;
-+	int npvds = 0, unpvds, l;
++	int npvds = 0, unpvds;
++	int l;
 +
 +	ret = -EINVAL;
 +	if (len != sizeof(struct pvd_list *)) {
-+		goto out;
++		return ret;
 +	}
 +
 +	ret = -EFAULT;
 +	if (copy_from_user(&pvl, optval, len)) {
-+		goto out;
++		return ret;
 +	}
 +
 +	ret = -EINVAL;
 +	get_user(unpvds, &pvl->npvd);
 +	if (unpvds < 0 || unpvds > MAXPVD) {
-+		goto out;
++		return ret;
 +	}
 +
 +	rtnl_lock();
 +
-+	pvdattr = pvl->pvds;
-+
 +	for (npvds = 0, pvd = net->first_used_pvd;
-+	     pvd != NULL && npvds < unpvds;
-+	     pvd = pvd->next, npvds++, pvdattr++) {
++	     pvd != NULL && npvds < unpvds && npvds < MAXPVD;
++	     pvd = pvd->next, npvds++) {
 +		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
 +			l = PVDNAMSIZ - 1;
 +		}
-+		ret = -EFAULT;
-+		if (copy_to_user(pvdattr->name, pvd->name, l + 1)) {
-+			rtnl_unlock();
++		if (copy_to_user(pvl->pvds[npvds], pvd->name, l + 1)) {
++			ret = -EFAULT;
 +			goto out;
 +		}
-+		put_user(pvd->sequence_number, &pvdattr->sequence_number);
-+		put_user(pvd->h_flag, &pvdattr->h_flag);
-+		put_user(pvd->l_flag, &pvdattr->l_flag);
-+		put_user(pvd->expires, &pvdattr->expires);
-+		put_user(pvd_get_fullindex(pvd), &pvdattr->index);
 +	}
 +
 +	put_user(npvds, &pvl->npvd);
 +
-+	rtnl_unlock();
-+
 +	ret = 0;
 +
 +out :
++	rtnl_unlock();
++
 +	return ret;
 +}
 +
 +/*
 + * Add a PvD in the per net/array. rtnl must be taken
 + * We have already checked that there was at least
-+ * one free slot
++ * one free slot. On 1st PvD insertion, we arm a timer
++ * that will fire every second
 + */
 +static void add_pvd_in_net(struct net_pvd *pvd)
 +{
@@ -9589,6 +10370,10 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	ASSERT_RTNL();
 +
 +	write_lock_bh(&pvd_base_lock);
++
++	if (net->first_used_pvd != NULL) {
++		mod_timer(&net->pvd_timer, jiffies + HZ);
++	}
 +
 +	next_free = net->pvd_free_slots[net->first_free_pvd_ix];
 +
@@ -9972,6 +10757,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +#endif
 +		rcu_read_lock();
 +
++		pvd_rtnl_notify(pvd, PVD_DEL);
++
 +		if (pvd->pcpu_refcnt) {
 +			free_percpu(pvd->pcpu_refcnt);
 +		}
@@ -9990,12 +10777,18 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +			}
 +		}
 +
-+		rcu_read_unlock();
++		/*
++		 * Free the duplicate payloads for the RDNSS and DNSSL options
++		 */
++		for (i = 0; i < pvd->ndnssl; i++) {
++			kfree(pvd->dnssl[i]);
++		}
 +
 +		/*
-+		 * Deassociate from the bound sockets
++		 * TODO : Deassociate from the bound sockets
 +		 */
-+		/* ... TODO ... */
++
++		rcu_read_unlock();
 +
 +		/*
 +		 * Remove it from the net structure
@@ -10004,6 +10797,79 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +		kvfree((char *) pvd);
 +	}
++}
++
++/*
++ * pvd_check_lifetimes : timer callback checking expired pvd as well as
++ * expired rdnss/dnssl attached to registered pvds
++ */
++static void pvd_check_lifetimes(unsigned long arg)
++{
++	struct net *net = (struct net *) arg;
++	struct net_pvd *pvd, *pvdnext = NULL;
++	unsigned long now = jiffies / HZ;
++	int FlagUpdate;
++	int i, j;
++
++	rtnl_lock();
++
++	for (pvd = net->first_used_pvd; pvd; pvd = pvdnext) {
++		pvdnext = pvd->next;
++
++		if (pvd->expires != -1UL && pvd->expires <= now) {
++			__unregister_pvd(pvd);
++			continue;
++		}
++
++		rcu_read_lock();
++
++		FlagUpdate = false;
++
++		for (i = 0; i < pvd->ndnssl; i++) {
++			if (pvd->dnsslExpire[i] != -1UL &&
++					pvd->dnsslExpire[i] <= now) {
++				FlagUpdate = true;
++
++				dnssl_rtnl_notify(pvd, pvd->dnssl[i], DNSSL_DEL);
++
++				kfree(pvd->dnssl[i]);
++				for (j = i + 1; j < pvd->ndnssl; j++) {
++					pvd->dnsslExpire[j - 1] = pvd->dnsslExpire[j];
++					pvd->dnssl[j - 1] = pvd->dnssl[j];
++				}
++				pvd->ndnssl--;
++			}
++		}
++
++		for (i = 0; i < pvd->nrdnss; i++) {
++			if (pvd->rdnssExpire[i] != -1UL &&
++					pvd->rdnssExpire[i] <= now) {
++				FlagUpdate = true;
++
++				rdnss_rtnl_notify(pvd, &pvd->rdnss[i], RDNSS_DEL);
++
++				for (j = i + 1; j < pvd->nrdnss; j++) {
++					pvd->rdnssExpire[j - 1] = pvd->rdnssExpire[j];
++					pvd->rdnss[j - 1] = pvd->rdnss[j];
++				}
++				pvd->nrdnss--;
++			}
++		}
++
++		if (FlagUpdate) {
++			pvd_rtnl_notify(pvd, PVD_UPDATE);
++		}
++		rcu_read_unlock();
++	}
++
++	/*
++	 * We rearm the timer for one more second if there are
++	 * some pvd still registered
++	 */
++	if (net->first_used_pvd != NULL) {
++		mod_timer(&net->pvd_timer, jiffies + HZ);
++	}
++	rtnl_unlock();
 +}
 +
 +void unregister_pvd(struct net_pvd *pvd)
@@ -10049,7 +10915,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net/core/sock.c
 --- linux-4.10.7-orig/net/core/sock.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/core/sock.c	2017-06-01 13:38:45.449518837 +0200
++++ linux-4.10.7/net/core/sock.c	2017-06-27 11:14:46.014551982 +0200
 @@ -106,6 +106,9 @@
  #include <linux/string.h>
  #include <linux/sockios.h>
@@ -10072,7 +10938,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  	if (optlen < sizeof(int))
  		return -EINVAL;
  
-@@ -1238,6 +1246,20 @@
+@@ -1238,6 +1246,23 @@
  	case SO_BINDTODEVICE:
  		return sock_getbindtodevice(sk, optval, optlen, len);
  
@@ -10086,6 +10952,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
 +		 * or the ioctl() way of ifreq
 +		 */
 +		return sock_getpvdinfo(sk, optval, optlen, len);
++	case SO_GETPVDATTRIBUTES:
++		/* Same remark as for SO_GETPVDINFO */
++		return sock_getpvdattr(sk, optval, optlen, len);
 +	case SO_GETRALIST :
 +		return sock_getralist(sk, optval, optlen, len);
 +#endif
@@ -10093,7 +10962,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  	case SO_GET_FILTER:
  		len = sk_get_filter(sk, (struct sock_filter __user *)optval, len);
  		if (len < 0)
-@@ -2515,6 +2537,10 @@
+@@ -2515,6 +2540,10 @@
  	sk->sk_ll_usec		=	sysctl_net_busy_read;
  #endif
  
@@ -10807,7 +11676,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_fib.c linux-4.10.7/
  }
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/net/ipv6/ndisc.c
 --- linux-4.10.7-orig/net/ipv6/ndisc.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/ndisc.c	2017-06-09 18:28:21.811308929 +0200
++++ linux-4.10.7/net/ipv6/ndisc.c	2017-06-30 13:34:02.495187800 +0200
 @@ -44,6 +44,9 @@
  #ifdef CONFIG_SYSCTL
  #include <linux/sysctl.h>
@@ -10885,7 +11754,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	}
 +
 +	/*
-+	 * FIXME : protect against malformed option
++	 * FIXME : protect against malformed option (check against length)
 +	 */
 +	while (labelLen != 0) {
 +		int n;
@@ -10965,7 +11834,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	optlen = (skb_tail_pointer(skb) - skb_transport_header(skb)) -
  		sizeof(struct ra_msg);
  
-@@ -1185,11 +1290,96 @@
+@@ -1185,11 +1290,98 @@
  		return;
  	}
  
@@ -11004,7 +11873,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	if (ndopts.nd_opt_pvdid) {
 +		printk("Some nd_opt_pvdid options\n");
 +
-+		if ((pvd = register_pvd( dev_net(skb->dev), ndopts.pvdname)) == NULL) {
++		if ((pvd = register_pvd(dev_net(skb->dev), ndopts.pvdname)) == NULL) {
 +			ND_PRINTK(0, err, "RA: can't allocate pvd %s\n",
 +				 ndopts.pvdname);
 +			if (ra_msg_sav != NULL) {
@@ -11012,17 +11881,22 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +			}
 +			return;
 +		}
++		pvd->notifications_blocked = true;
++
 +		/*
 +		 * Fill in the rest of parameters. We only keep here
 +		 * the fields that the kernel can use. Other associated
 +		 * values, such as DNSSL/RDNSS, will be caught via the
 +		 * netlink notifications by the user land applications.
-+		 * We just want to make sure that the notifications
 +		 */
 +		pvd->sequence_number = ndopts.pvd_sequence_number;
 +		pvd->h_flag = ndopts.pvd_h_flag;
 +		pvd->l_flag = ndopts.pvd_l_flag;
-+		pvd->expires = ndopts.pvd_lifetime;
++		pvd->lifetime = ndopts.pvd_lifetime;
++		pvd->expires =
++			pvd->lifetime == (unsigned long) 0xFFFFFFFF ?
++				-1UL :
++				ndopts.pvd_lifetime + jiffies / HZ;
 +		pvd->dev = skb->dev;
 +		pvd->lla = ipv6_hdr(skb)->saddr;
 +		dev_hold(skb->dev);
@@ -11034,16 +11908,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +
 +#ifdef	CONFIG_NETPVD
 +	/*
-+	 * Check if the PvD is obosolete (FIXME : we should also
-+	 * handle its lifetime if not 0)
++	 * Check if the PvD is obosolete
 +	 */
 +	if (pvd != NULL && pvd->expires == 0) {
 +		unregister_pvd(pvd);
 +		pvd = NULL;
 +	}
-+#endif
 +
-+#ifdef	CONFIG_NETPVD
 +	/*
 +	 * Time to register the RA in the per pvd cache, even if the
 +	 * RA is considered invalid and this function exits prematurely
@@ -11062,7 +11933,33 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	if (!ipv6_accept_ra(in6_dev)) {
  		ND_PRINTK(2, info,
  			  "RA: %s, did not accept ra for dev: %s\n",
-@@ -1302,6 +1492,14 @@
+@@ -1268,7 +1460,7 @@
+ 				  "RA: %s got default router without neighbour\n",
+ 				  __func__);
+ 			ip6_rt_put(rt);
+-			return;
++			goto out_pvd;
+ 		}
+ 	}
+ 	if (rt && lifetime == 0) {
+@@ -1286,7 +1478,7 @@
+ 			ND_PRINTK(0, err,
+ 				  "RA: %s failed to add default route\n",
+ 				  __func__);
+-			return;
++			goto out_pvd;
+ 		}
+ 
+ 		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
+@@ -1295,13 +1487,21 @@
+ 				  "RA: %s got default router without neighbour\n",
+ 				  __func__);
+ 			ip6_rt_put(rt);
+-			return;
++			goto out_pvd;
+ 		}
+ 		neigh->flags |= NTF_ROUTER;
+ 	} else if (rt) {
  		rt->rt6i_flags = (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
  	}
  
@@ -11077,7 +11974,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1410,6 +1608,13 @@
+@@ -1410,6 +1610,13 @@
  		     p;
  		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
  			struct route_info *ri = (struct route_info *)p;
@@ -11091,7 +11988,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
  			    ri->prefix_len == 0)
-@@ -1421,7 +1626,8 @@
+@@ -1421,7 +1628,8 @@
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -11101,7 +11998,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
-@@ -1445,7 +1651,8 @@
+@@ -1445,7 +1653,8 @@
  		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
@@ -11111,6 +12008,62 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
+@@ -1481,10 +1690,55 @@
+ 	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
+ 		ND_PRINTK(2, warn, "RA: invalid RA options\n");
+ 	}
++
+ out:
+ 	ip6_rt_put(rt);
+ 	if (neigh)
+ 		neigh_release(neigh);
++
++out_pvd :
++#ifdef	CONFIG_NETPVD
++	if (! pvd)
++		goto out_last;
++
++	/*
++	 * We want to catch RDNSS/DNSSL options to associate them
++	 * with a PvD if defined in the RA. If no PvD, no need
++	 * to parse them. For now, we only handle the lifetime and
++	 * do not bother to parse the option itself (especially the
++	 * names). The applications will retrieve the option and
++	 * will have to extract the DNSSL/RDNSS fields if they
++	 * want to)
++	 */
++	if (ndopts.nd_useropts) {
++		struct nd_opt_hdr *p;
++		for (p = ndopts.nd_useropts;
++		     p;
++		     p = ndisc_next_useropt(skb->dev, p,
++					    ndopts.nd_useropts_end)) {
++			if (p->nd_opt_type == ND_OPT_RDNSS) {
++				pvd_register_rdnss(pvd, p);
++			} else
++			if (p->nd_opt_type == ND_OPT_DNSSL) {
++				pvd_register_dnssl(pvd, p);
++			}
++		}
++	}
++
++	/*
++	 * rtnl notification must happen last because the application
++	 * could query the pvd attributes before we had a chance to
++	 * update them (unfortunately, this is not sufficient, because
++	 * routes and addresses creation above may have also issued
++	 * some notifications)
++	 */
++	pvd->notifications_blocked = false;
++
++	pvd_rtnl_notify(pvd, PVD_UPDATE);
++
++out_last :
++#endif
++	return;
+ }
+ 
+ static void ndisc_redirect_rcv(struct sk_buff *skb)
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/net/ipv6/route.c
 --- linux-4.10.7-orig/net/ipv6/route.c	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/net/ipv6/route.c	2017-06-09 18:12:47.679335878 +0200
