@@ -12691,3 +12691,25 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	nlmsg_end(skb, nlh);
  	return 0;
  
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/security/selinux/nlmsgtab.c linux-4.10.7/security/selinux/nlmsgtab.c
+--- linux-4.10.7-orig/security/selinux/nlmsgtab.c	2017-03-30 09:44:36.000000000 +0200
++++ linux-4.10.7/security/selinux/nlmsgtab.c	2017-07-04 17:53:57.399572111 +0200
+@@ -78,6 +78,8 @@
+ 	{ RTM_GETNSID,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+ 	{ RTM_NEWSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ },
+ 	{ RTM_GETSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
++
++	{ RTM_PVDSTATUS,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },	/* PVD extension */
+ };
+ 
+ static struct nlmsg_perm nlmsg_tcpdiag_perms[] =
+@@ -157,7 +159,8 @@
+ 	switch (sclass) {
+ 	case SECCLASS_NETLINK_ROUTE_SOCKET:
+ 		/* RTM_MAX always point to RTM_SETxxxx, ie RTM_NEWxxx + 3 */
+-		BUILD_BUG_ON(RTM_MAX != (RTM_NEWSTATS + 3));
++		BUILD_BUG_ON(RTM_MAX != (RTM_PVDSTATUS + 3));	//  T.DANIS : used to be RTM_NEWSTATS + 3
++
+ 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_route_perms,
+ 				 sizeof(nlmsg_route_perms));
+ 		break;
