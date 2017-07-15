@@ -7990,7 +7990,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ip6_route.h linux-4.
  		     u32 mark, kuid_t uid);
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7/include/net/ndisc.h
 --- linux-4.10.7-orig/include/net/ndisc.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/net/ndisc.h	2017-06-06 16:47:32.070961156 +0200
++++ linux-4.10.7/include/net/ndisc.h	2017-07-15 17:56:25.922427172 +0200
 @@ -37,6 +37,9 @@
  	ND_OPT_RDNSS = 25,		/* RFC5006 */
  	ND_OPT_DNSSL = 31,		/* RFC6106 */
@@ -8011,25 +8011,21 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7
  
  #include <net/neighbour.h>
  
-@@ -102,6 +108,17 @@
+@@ -102,6 +108,13 @@
  	__u8		nd_opt_len;
  } __packed;
  
 +struct nd_opt_pvdid {
 +	uint8_t nd_opt_pvdid_type;
 +	uint8_t nd_opt_pvdid_len;
-+	uint8_t nd_opt_pvdid_seq : 4;
-+	uint8_t nd_opt_pvdid_h : 1;
-+	uint8_t nd_opt_pvdid_l : 1;
-+	uint16_t nd_opt_pvdid_reserved : 10;
-+	uint32_t nd_opt_pvdid_lifetime;
++	unsigned char nd_opt_pvdid_payload[6];
 +	unsigned char nd_opt_pvdid_name[];
 +};
 +
  /* ND options */
  struct ndisc_options {
  	struct nd_opt_hdr *nd_opt_array[__ND_OPT_ARRAY_MAX];
-@@ -114,6 +131,14 @@
+@@ -114,6 +127,14 @@
  #if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
  	struct nd_opt_hdr *nd_802154_opt_array[ND_OPT_TARGET_LL_ADDR + 1];
  #endif
@@ -8044,7 +8040,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7
  };
  
  #define nd_opts_src_lladdr		nd_opt_array[ND_OPT_SOURCE_LL_ADDR]
-@@ -215,7 +240,8 @@
+@@ -215,7 +236,8 @@
  				       int addr_type, u32 addr_flags,
  				       bool sllao, bool tokenized,
  				       __u32 valid_lft, u32 prefered_lft,
@@ -8054,7 +8050,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7
  };
  
  #if IS_ENABLED(CONFIG_IPV6)
-@@ -295,7 +321,8 @@
+@@ -295,7 +317,8 @@
  						 bool sllao, bool tokenized,
  						 __u32 valid_lft,
  						 u32 prefered_lft,
@@ -8064,7 +8060,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ndisc.h linux-4.10.7
  {
  	if (dev->ndisc_ops && dev->ndisc_ops->prefix_rcv_add_addr)
  		dev->ndisc_ops->prefix_rcv_add_addr(net, dev, pinfo, in6_dev,
-@@ -303,7 +330,8 @@
+@@ -303,7 +326,8 @@
  						    addr_flags, sllao,
  						    tokenized, valid_lft,
  						    prefered_lft,
@@ -11929,7 +11925,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_fib.c linux-4.10.7/
  }
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/net/ipv6/ndisc.c
 --- linux-4.10.7-orig/net/ipv6/ndisc.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/ndisc.c	2017-06-30 13:34:02.495187800 +0200
++++ linux-4.10.7/net/ipv6/ndisc.c	2017-07-15 17:56:17.921539572 +0200
 @@ -44,6 +44,9 @@
  #ifdef CONFIG_SYSCTL
  #include <linux/sysctl.h>
@@ -11972,7 +11968,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  void __ndisc_fill_addr_option(struct sk_buff *skb, int type, void *data,
  			      int data_len, int pad)
  {
-@@ -211,6 +232,67 @@
+@@ -211,6 +232,69 @@
  	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
  }
  
@@ -11984,6 +11980,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	int labelLen;
 +	int l = nd_opt->nd_opt_len << 3;
 +	struct nd_opt_pvdid *pvd = (struct nd_opt_pvdid *) nd_opt;
++	uint32_t v32;
 +
 +	printk("pvdid_parse_opt called\n");
 +
@@ -12023,10 +12020,11 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +		printk("Name in nd_opt_pvdid too long\n");
 +		return -1;
 +	}
-+	ndopts->pvd_sequence_number = pvd->nd_opt_pvdid_seq;
-+	ndopts->pvd_h_flag = pvd->nd_opt_pvdid_h;
-+	ndopts->pvd_l_flag = pvd->nd_opt_pvdid_l;
-+	ndopts->pvd_lifetime = ntohl(pvd->nd_opt_pvdid_lifetime);
++	ndopts->pvd_sequence_number = (pvd->nd_opt_pvdid_payload[0] >> 4) & 0x0F;;
++	ndopts->pvd_h_flag = (pvd->nd_opt_pvdid_payload[0] >> 3) & 0x01;
++	ndopts->pvd_l_flag = (pvd->nd_opt_pvdid_payload[0] >> 2) & 0x01;
++	memcpy(&v32, &pvd->nd_opt_pvdid_payload[2], 4);
++	ndopts->pvd_lifetime = ntohl(v32);
 +
 +	strcpy(ndopts->pvdname, (char *) &pvd->nd_opt_pvdid_name[1]);
 +
@@ -12040,7 +12038,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  					  u8 *opt, int opt_len,
  					  struct ndisc_options *ndopts)
-@@ -255,6 +337,19 @@
+@@ -255,6 +339,19 @@
  				ndopts->nd_opts_ri = nd_opt;
  			break;
  #endif
@@ -12060,7 +12058,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		default:
  			if (ndisc_is_useropt(dev, nd_opt)) {
  				ndopts->nd_useropts_end = nd_opt;
-@@ -1140,6 +1235,7 @@
+@@ -1140,6 +1237,7 @@
  static void ndisc_router_discovery(struct sk_buff *skb)
  {
  	struct ra_msg *ra_msg = (struct ra_msg *)skb_transport_header(skb);
@@ -12068,7 +12066,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	struct neighbour *neigh = NULL;
  	struct inet6_dev *in6_dev;
  	struct rt6_info *rt = NULL;
-@@ -1149,9 +1245,18 @@
+@@ -1149,9 +1247,18 @@
  	unsigned int pref = 0;
  	__u32 old_if_flags;
  	bool send_ifinfo_notify = false;
@@ -12087,7 +12085,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	optlen = (skb_tail_pointer(skb) - skb_transport_header(skb)) -
  		sizeof(struct ra_msg);
  
-@@ -1185,11 +1290,98 @@
+@@ -1185,11 +1292,98 @@
  		return;
  	}
  
@@ -12186,7 +12184,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	if (!ipv6_accept_ra(in6_dev)) {
  		ND_PRINTK(2, info,
  			  "RA: %s, did not accept ra for dev: %s\n",
-@@ -1268,7 +1460,7 @@
+@@ -1268,7 +1462,7 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12195,7 +12193,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  	if (rt && lifetime == 0) {
-@@ -1286,7 +1478,7 @@
+@@ -1286,7 +1480,7 @@
  			ND_PRINTK(0, err,
  				  "RA: %s failed to add default route\n",
  				  __func__);
@@ -12204,7 +12202,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1295,13 +1487,21 @@
+@@ -1295,13 +1489,21 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12227,7 +12225,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1410,6 +1610,13 @@
+@@ -1410,6 +1612,13 @@
  		     p;
  		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
  			struct route_info *ri = (struct route_info *)p;
@@ -12241,7 +12239,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
  			    ri->prefix_len == 0)
-@@ -1421,7 +1628,8 @@
+@@ -1421,7 +1630,8 @@
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -12251,7 +12249,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
-@@ -1445,7 +1653,8 @@
+@@ -1445,7 +1655,8 @@
  		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
@@ -12261,7 +12259,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
-@@ -1481,10 +1690,55 @@
+@@ -1481,10 +1692,55 @@
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
