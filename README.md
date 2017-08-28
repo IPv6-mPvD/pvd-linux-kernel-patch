@@ -1,18 +1,24 @@
 # PvD related kernel patch
 
+## Branches
+
+The _master_ branch contains a patch to be applied against a pristine 4.10.7
+kernel source tree.
+
+A patch for an ubuntu zesty kernel tree is available in the _ubuntu-zesty_
+branch :
+
+~~~~
+git clone https://github.com/IPv6-mPvD/pvd-linux-kernel-patch.git
+cd pvd-linux-kernel-patch
+git checkout ubuntu-zesty
+~~~~
+
+
 ## Patch per se
 
-WARNING : the instructions below are used to add pvd support to a ubuntu
-4.10 kernel. We will revert to provide a patch for a pristine kernel in
-the next commits.
-
-Pre-requisite :
-
-~~~~
-git clone git://kernel.ubuntu.com/ubuntu/ubuntu-zesty.git ubuntu-4.10.0
-cd ubuntu-4.10.0
-git checkout 56389f24b205f2464626d56bc15c5a6ceeeceedf
-~~~~
+This directory contains a path file to apply to kernel 4.10.7. It brings
+support for IpV6 PvD feature as defined in IETF Draft XXX.
 
 We have decided to provide patches for now in order to reduce the size of the
 kernel set stored in git.
@@ -20,7 +26,7 @@ kernel set stored in git.
 The patch is generated with the following command :
 
 ~~~~
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig ubuntu-4.10.0 >patch-linux-4.10.7
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig linux-4.10.7 >patch-linux-4.10.7
 ~~~~
 
 ## Headers
