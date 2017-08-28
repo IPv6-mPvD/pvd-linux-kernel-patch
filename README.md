@@ -7,11 +7,14 @@ WARNING : the instructions below are used to add pvd support to a ubuntu
 the next commits.
 
 Pre-requisite :
+
+~~~~
 git clone git://kernel.ubuntu.com/ubuntu/ubuntu-zesty.git ubuntu-4.10.0
 cd ubuntu-4.10.0
 git checkout 56389f24b205f2464626d56bc15c5a6ceeeceedf
+~~~~
 
-We decide to provide patches for now in order to reduce the size of the
+We have decided to provide patches for now in order to reduce the size of the
 kernel set stored in git.
 
 The patch is generated with the following command :
