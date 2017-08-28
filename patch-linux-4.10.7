@@ -913,8 +913,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/Makefile ubuntu-4.10.0
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/net/core/pvd.c
 --- ubuntu-4.10.0-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ ubuntu-4.10.0/net/core/pvd.c	2017-07-31 09:11:39.084594183 +0100
-@@ -0,0 +1,2227 @@
++++ ubuntu-4.10.0/net/core/pvd.c	2017-08-28 22:50:40.324251780 +0100
+@@ -0,0 +1,2244 @@
 +/*
 + */
 +
@@ -1458,6 +1458,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
 +
++EXPORT_SYMBOL(pvd_rtnl_notify);
++
 +void	rdnss_rtnl_notify(
 +		struct net_pvd *pvd,
 +		struct in6_addr *rdnss,
@@ -1498,6 +1500,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
 +
++EXPORT_SYMBOL(rdnss_rtnl_notify);
++
 +void	dnssl_rtnl_notify(
 +		struct net_pvd *pvd,
 +		char *dnssl,
@@ -1537,6 +1541,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +errout:
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
++
++EXPORT_SYMBOL(dnssl_rtnl_notify);
 +
 +/*
 + * pvd_migrate_route : some routes are created via RA
@@ -1679,6 +1685,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	return(rc);
 +}
 +
++EXPORT_SYMBOL(pvd_migrate_route);
++
 +/*
 + * pvd_migrate_addr : some addresses are created from prefixes (via RA)
 + * or manually associated to a pvd. We want to be able to find the pvd
@@ -1801,6 +1809,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	return(rc);
 +}
 +
++EXPORT_SYMBOL(pvd_migrate_addr);
++
 +/*
 + * pvd_register_rdnss : given a RDNSS option, registers it. This means
 + * checking if each address it defines is already registered. We also
@@ -1884,6 +1894,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +	rcu_read_unlock();
 +}
++
++EXPORT_SYMBOL(pvd_register_rdnss);
 +
 +/*
 + * pvd_register_dnssl : register a DNSSL blob (we should really parse each
@@ -1989,6 +2001,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +	rcu_read_unlock();
 +}
++
++EXPORT_SYMBOL(pvd_register_dnssl);
 +
 +/*
 + * alloc_bound_pvd : allocate a structure large enough to accept
@@ -2976,6 +2990,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	return pvd;
 +}
 +
++EXPORT_SYMBOL(register_pvd);
++EXPORT_SYMBOL(unregister_pvd);
++
 +/*
 + * TODO : provide and implement a unregister_pvd function
 + * We should disconnect from the associated addresses, sockets
@@ -3960,7 +3977,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c ubuntu-4.10.
  }
 diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/net/ipv6/ndisc.c
 --- ubuntu-4.10.0-orig/net/ipv6/ndisc.c	2017-08-10 11:05:24.293046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/ndisc.c	2017-08-28 17:22:03.652156485 +0100
++++ ubuntu-4.10.0/net/ipv6/ndisc.c	2017-08-28 19:07:29.832187061 +0100
 @@ -44,6 +44,9 @@
  #ifdef CONFIG_SYSCTL
  #include <linux/sysctl.h>
@@ -4206,15 +4223,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1325,6 +1474,7 @@
- 	if (in6_dev->nd_parms) {
- 		unsigned long rtime = ntohl(ra_msg->retrans_timer);
- 
-+
- 		if (rtime && rtime/1000 < MAX_SCHEDULE_TIMEOUT/HZ) {
- 			rtime = (rtime*HZ)/1000;
- 			if (rtime < HZ/10)
-@@ -1410,6 +1560,13 @@
+@@ -1410,6 +1559,13 @@
  		     p;
  		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
  			struct route_info *ri = (struct route_info *)p;
@@ -4228,7 +4237,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
  			    ri->prefix_len == 0)
-@@ -1421,7 +1578,8 @@
+@@ -1421,7 +1577,8 @@
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -4238,7 +4247,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  	}
  
-@@ -1445,7 +1603,8 @@
+@@ -1445,7 +1602,8 @@
  		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
@@ -4248,7 +4257,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  	}
  
-@@ -1481,10 +1640,55 @@
+@@ -1481,10 +1639,55 @@
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
