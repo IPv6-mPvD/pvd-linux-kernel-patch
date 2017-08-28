@@ -8745,8 +8745,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/Makefile linux-4.10.7/n
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/core/pvd.c
 --- linux-4.10.7-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/net/core/pvd.c	2017-08-28 19:01:12.584185238 +0100
-@@ -0,0 +1,2227 @@
++++ linux-4.10.7/net/core/pvd.c	2017-08-28 22:44:20.012249942 +0100
+@@ -0,0 +1,2244 @@
 +/*
 + */
 +
@@ -9290,6 +9290,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
 +
++EXPORT_SYMBOL(pvd_rtnl_notify);
++
 +void	rdnss_rtnl_notify(
 +		struct net_pvd *pvd,
 +		struct in6_addr *rdnss,
@@ -9330,6 +9332,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
 +
++EXPORT_SYMBOL(rdnss_rtnl_notify);
++
 +void	dnssl_rtnl_notify(
 +		struct net_pvd *pvd,
 +		char *dnssl,
@@ -9369,6 +9373,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +errout:
 +	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
 +}
++
++EXPORT_SYMBOL(dnssl_rtnl_notify);
 +
 +/*
 + * pvd_migrate_route : some routes are created via RA
@@ -9511,6 +9517,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	return(rc);
 +}
 +
++EXPORT_SYMBOL(pvd_migrate_route);
++
 +/*
 + * pvd_migrate_addr : some addresses are created from prefixes (via RA)
 + * or manually associated to a pvd. We want to be able to find the pvd
@@ -9633,6 +9641,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	return(rc);
 +}
 +
++EXPORT_SYMBOL(pvd_migrate_addr);
++
 +/*
 + * pvd_register_rdnss : given a RDNSS option, registers it. This means
 + * checking if each address it defines is already registered. We also
@@ -9716,6 +9726,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +	rcu_read_unlock();
 +}
++
++EXPORT_SYMBOL(pvd_register_rdnss);
 +
 +/*
 + * pvd_register_dnssl : register a DNSSL blob (we should really parse each
@@ -9821,6 +9833,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +	rcu_read_unlock();
 +}
++
++EXPORT_SYMBOL(pvd_register_dnssl);
 +
 +/*
 + * alloc_bound_pvd : allocate a structure large enough to accept
@@ -10807,6 +10821,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	rtnl_unlock();
 +	return pvd;
 +}
++
++EXPORT_SYMBOL(register_pvd);
++EXPORT_SYMBOL(unregister_pvd);
 +
 +/*
 + * TODO : provide and implement a unregister_pvd function
