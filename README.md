@@ -40,3 +40,16 @@ Ultimately, this should no longer be needed once PvD support will be officially
 part of the kernel. The C library build should copy these files automatically
 under /usr/include.
 
+## Activating PvD feature
+
+Activate _CONFIG\_PVD_ in the .config file.
+
+On PvD aware kernels, new entries are created under _/proc_ :
+
+~~~~
+file : /proc/net/pvd
+directory : /proc/net/pvd.d/<pvd>
+~~~~
+
+These entries are created even if no pvd (explicit or implicit) has been
+received.
