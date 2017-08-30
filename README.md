@@ -42,7 +42,7 @@ under /usr/include.
 
 ## Activating PvD feature
 
-Activate _CONFIG\_PVD_ in the .config file.
+Activate _CONFIG\_PVD\_NET_ in the .config file.
 
 On PvD aware kernels, new entries are created under _/proc_ :
 
