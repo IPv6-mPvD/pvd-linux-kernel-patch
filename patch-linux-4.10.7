@@ -11913,7 +11913,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/anycast.c linux-4.10.7/
  		goto out;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/datagram.c linux-4.10.7/net/ipv6/datagram.c
 --- linux-4.10.7-orig/net/ipv6/datagram.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/datagram.c	2017-09-21 12:30:13.613804277 +0200
++++ linux-4.10.7/net/ipv6/datagram.c	2017-09-22 19:49:46.465338974 +0200
 @@ -83,6 +83,35 @@
  	}
  	ip6_datagram_flow_key_init(&fl6, sk);
@@ -13214,6 +13214,88 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
  	return err;
  }
  
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/udp.c linux-4.10.7/net/ipv6/udp.c
+--- linux-4.10.7-orig/net/ipv6/udp.c	2017-03-30 09:44:36.000000000 +0200
++++ linux-4.10.7/net/ipv6/udp.c	2017-09-23 11:32:06.438393337 +0200
+@@ -1019,6 +1019,10 @@
+ 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
+ 	struct sockcm_cookie sockc;
+ 
++#ifdef	CONFIG_NETPVD
++	fl6.pvd = NULL;
++#endif
++
+ 	ipc6.hlimit = -1;
+ 	ipc6.tclass = -1;
+ 	ipc6.dontfrag = -1;
+@@ -1148,6 +1152,35 @@
+ 	fl6.flowi6_mark = sk->sk_mark;
+ 	fl6.flowi6_uid = sk->sk_uid;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * Time to resolve the socket bound pvd (currently full indexes) to pvd pointers
++	 * For now, only the 1st one matters
++	 */
++	fl6.pvd = NULL;
++	if (sk->sk_n_bound_pvd > 0) {
++		struct net_pvd *pvd;
++
++		rcu_read_lock();
++		pvd = __pvd_get_by_fullindex(sock_net(sk), sk->sk_bound_pvds[0]);
++		if (pvd != NULL) {
++			/*
++			 * fl6.pvd will only be used during the route and
++			 * source address selection of the connect() process
++			 *
++			 * We can pvd_put() it before returning
++			 */
++			fl6.pvd = pvd_hold(pvd);
++			printk("udpv6_sendmsg : pvd %s selected\n", pvd->name);
++		}
++		rcu_read_unlock();
++		if (pvd == NULL) {
++			err = -ENETUNREACH;
++			goto out;
++		}
++	}
++#endif
++
+ 	if (msg->msg_controllen) {
+ 		opt = &opt_space;
+ 		memset(opt, 0, sizeof(struct ipv6_txoptions));
+@@ -1157,12 +1190,19 @@
+ 		err = ip6_datagram_send_ctl(sock_net(sk), sk, msg, &fl6, &ipc6, &sockc);
+ 		if (err < 0) {
+ 			fl6_sock_release(flowlabel);
++#ifdef	CONFIG_NETPVD
++			pvd_put(fl6.pvd);
++#endif
+ 			return err;
+ 		}
+ 		if ((fl6.flowlabel&IPV6_FLOWLABEL_MASK) && !flowlabel) {
+ 			flowlabel = fl6_sock_lookup(sk, fl6.flowlabel);
+-			if (!flowlabel)
++			if (!flowlabel) {
++#ifdef	CONFIG_NETPVD
++				pvd_put(fl6.pvd);
++#endif
+ 				return -EINVAL;
++			}
+ 		}
+ 		if (!(opt->opt_nflen|opt->opt_flen))
+ 			opt = NULL;
+@@ -1280,6 +1320,10 @@
+ 	}
+ 
+ out:
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	dst_release(dst);
+ 	fl6_sock_release(flowlabel);
+ 	txopt_put(opt_to_free);
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/xfrm6_policy.c linux-4.10.7/net/ipv6/xfrm6_policy.c
 --- linux-4.10.7-orig/net/ipv6/xfrm6_policy.c	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/net/ipv6/xfrm6_policy.c	2017-09-11 11:31:40.565569334 +0200
@@ -13238,21 +13320,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/netfilter/ipvs/ip_vs_xmit.c 
  		goto out_err;
  	if (do_xfrm) {
  		dst = xfrm_lookup(net, dst, flowi6_to_flowi(&fl6), NULL, 0);
-diff -Naur -X DiffNaurExclude linux-4.10.7-orig/PROBLEM linux-4.10.7/PROBLEM
---- linux-4.10.7-orig/PROBLEM	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/PROBLEM	2017-09-13 23:38:07.389050300 +0200
-@@ -0,0 +1,11 @@
-+
-+Router 1 forwarding actif
-+Router 2 forwarding inactif
-+
-+connect(router2) => saddr router2 mais route à travers router1
-+
-+On réactive le forwarding de router 2
-+
-+connect(router1) => saddr router2 et route à travers router1
-+
-+C'est dû au caching.
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/security/selinux/nlmsgtab.c linux-4.10.7/security/selinux/nlmsgtab.c
 --- linux-4.10.7-orig/security/selinux/nlmsgtab.c	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/security/selinux/nlmsgtab.c	2017-07-04 17:53:57.399572111 +0200
