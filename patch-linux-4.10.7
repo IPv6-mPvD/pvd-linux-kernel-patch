@@ -7878,14 +7878,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/linux/inet.h linux-4.10.
  #endif	/* _LINUX_INET_H */
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/linux/sched.h linux-4.10.7/include/linux/sched.h
 --- linux-4.10.7-orig/include/linux/sched.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/linux/sched.h	2017-09-25 17:01:00.853124415 +0200
-@@ -1998,6 +1998,10 @@
++++ linux-4.10.7/include/linux/sched.h	2017-09-26 11:26:20.782091803 +0200
+@@ -1998,6 +1998,9 @@
  	/* A live task holds one reference. */
  	atomic_t stack_refcount;
  #endif
 +#ifdef	CONFIG_NETPVD
-+	int	n_bound_pvd;	/* -1 : undefined, #-1 : forcibly set */
-+	char	*bound_pvd;
++	char	*bound_pvd;	/* 0 : inherit; -1 : unset, otherwise : set */
 +#endif
  /* CPU-specific state of this task */
  	struct thread_struct thread;
@@ -8195,8 +8194,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/net_namespace.h linu
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/include/net/pvd.h
 --- linux-4.10.7-orig/include/net/pvd.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/net/pvd.h	2017-09-25 18:13:43.438767485 +0200
-@@ -0,0 +1,210 @@
++++ linux-4.10.7/include/net/pvd.h	2017-09-26 11:12:13.366990289 +0200
+@@ -0,0 +1,208 @@
 +
 +#ifndef	_NET_PVD_H
 +#define	_NET_PVD_H
@@ -8377,8 +8376,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +extern int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd);
 +extern int sock_getbindtopvd(struct sock *sk, char __user *optval,
 +				int __user *optlen, int len);
-+extern int proc_setbindtopvd(struct sock *sk, char __user *optval,
-+				int optlen);
 +extern int sock_setbindtopvd(struct sock *sk, char __user *optval,
 +				int optlen);
 +extern int sock_getpvdattr(
@@ -8409,7 +8406,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +#endif		/* _NET_PVD_H */
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/include/net/sock.h
 --- linux-4.10.7-orig/include/net/sock.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/net/sock.h	2017-05-16 11:27:31.524931823 +0200
++++ linux-4.10.7/include/net/sock.h	2017-09-26 12:22:05.218859573 +0200
 @@ -129,6 +129,7 @@
   *	@skc_reuse: %SO_REUSEADDR setting
   *	@skc_reuseport: %SO_REUSEPORT setting
@@ -8423,8 +8420,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/
  	unsigned char		skc_net_refcnt:1;
  	int			skc_bound_dev_if;
 +#ifdef	CONFIG_NETPVD
-+	int			skc_n_bound_pvd;	/* -1 : undefined, #-1 : forcibly set */
-+	int			skc_bound_pvds[32];	/* FIXME : use MAXBOUNDPVD instead */
++	int			skc_n_bound_pvd;	/* 0 : inherit, -1 : unset, 1 : set */
++	int			skc_bound_pvd;
 +#endif
  	union {
  		struct hlist_node	skc_bind_node;
@@ -8434,14 +8431,14 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/
  #define sk_net_refcnt		__sk_common.skc_net_refcnt
  #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
 +#define sk_n_bound_pvd		__sk_common.skc_n_bound_pvd
-+#define sk_bound_pvds		__sk_common.skc_bound_pvds
++#define sk_bound_pvd		__sk_common.skc_bound_pvd
  #define sk_bind_node		__sk_common.skc_bind_node
  #define sk_prot			__sk_common.skc_prot
  #define sk_net			__sk_common.skc_net
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/asm-generic/socket.h linux-4.10.7/include/uapi/asm-generic/socket.h
 --- linux-4.10.7-orig/include/uapi/asm-generic/socket.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/uapi/asm-generic/socket.h	2017-09-25 18:15:13.284339770 +0200
-@@ -94,4 +94,11 @@
++++ linux-4.10.7/include/uapi/asm-generic/socket.h	2017-09-26 11:12:03.069158809 +0200
+@@ -94,4 +94,10 @@
  
  #define SCM_TIMESTAMPING_OPT_STATS	54
  
@@ -8450,7 +8447,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/asm-generic/socket.
 +#define	SO_GETPVDLIST		56
 +#define	SO_GETPVDATTRIBUTES	57
 +#define	SO_CREATEPVD		58
-+#define	SO_BINDPROCTOPVD	59
 +
  #endif /* __ASM_GENERIC_SOCKET_H */
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/if_addr.h linux-4.10.7/include/uapi/linux/if_addr.h
@@ -8477,8 +8473,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/Kbuild linux-
  header-y += quota.h
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h linux-4.10.7/include/uapi/linux/pvd-user.h
 --- linux-4.10.7-orig/include/uapi/linux/pvd-user.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/uapi/linux/pvd-user.h	2017-08-28 19:55:25.940183562 +0200
-@@ -0,0 +1,194 @@
++++ linux-4.10.7/include/uapi/linux/pvd-user.h	2017-09-26 11:29:35.185893931 +0200
+@@ -0,0 +1,198 @@
 +/*
 + * This header file contains definitions for use when exchanging
 + * data with the user space
@@ -8588,16 +8584,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +/*
 + * For SO_BINDTOPVD (set and get)
 + */
-+#define	MAXBOUNDPVD	32	/* 1 practically after discussions */
-+
 +#define	PVD_BIND_SCOPE_SOCKET	0
 +#define	PVD_BIND_SCOPE_THREAD	1
 +#define	PVD_BIND_SCOPE_PROCESS	2
 +
 +struct bind_to_pvd {
 +	int scope;
-+	int npvd;	/* in/out */
-+	char pvdnames[MAXBOUNDPVD][PVDNAMSIZ];
++	/*
++	 * npvd : in
++	 * -1 : inherit
++	 *  0 : forcibly unset
++	 *  1 : forcibly set
++	 */
++	int npvd;
++	char pvdname[PVDNAMSIZ];
 +};
 +
 +/*
@@ -8764,6 +8764,23 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/kernel/configs/kvm_guest.config 
  CONFIG_BLOCK=y
  CONFIG_BLK_DEV=y
  CONFIG_NETWORK_FILESYSTEMS=y
+diff -Naur -X DiffNaurExclude linux-4.10.7-orig/kernel/exit.c linux-4.10.7/kernel/exit.c
+--- linux-4.10.7-orig/kernel/exit.c	2017-03-30 09:44:36.000000000 +0200
++++ linux-4.10.7/kernel/exit.c	2017-09-26 14:02:36.724380276 +0200
+@@ -839,6 +839,13 @@
+ 	exit_task_work(tsk);
+ 	exit_thread(tsk);
+ 
++#ifdef	CONFIG_NETPVD
++	if (tsk->bound_pvd != ((void *) 0) && tsk->bound_pvd != ((void *) -1)) {
++		kfree(tsk->bound_pvd);
++		tsk->bound_pvd = NULL;
++	}
++#endif
++
+ 	/*
+ 	 * Flush inherited counters to the parent - before the parent
+ 	 * gets woken up by child-exit notifications.
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/6lowpan/core.c linux-4.10.7/net/6lowpan/core.c
 --- linux-4.10.7-orig/net/6lowpan/core.c	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/net/6lowpan/core.c	2017-06-06 16:43:28.766968175 +0200
@@ -8820,8 +8837,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/Makefile linux-4.10.7/n
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/core/pvd.c
 --- linux-4.10.7-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/net/core/pvd.c	2017-09-26 09:59:19.321170247 +0200
-@@ -0,0 +1,2437 @@
++++ linux-4.10.7/net/core/pvd.c	2017-09-27 12:16:53.153574629 +0200
+@@ -0,0 +1,2404 @@
 +/*
 + */
 +
@@ -8862,6 +8879,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +#ifdef	CONFIG_NETPVD
 +
 +#define	DIM(t)	(sizeof(t) / sizeof(t[0]))
++
++/*
++ * PTR values for the bound_pvd field of struct task
++ */
++#define	FORCE_NO_PVD_PTR	((void *) -1)
++#define	INHERIT_PVD_PTR		((void *) 0)
 +
 +#define	MAXPVDINDEX	(1 << (32 - MAXPVDSHIFT))
 +#define	_TABIDX(f)	((f) & ((1 << MAXPVDSHIFT) - 1))
@@ -9932,166 +9955,117 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 + *
 + * Internal API
 + */
-+int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd)
++static int _pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd, int scope)
 +{
-+	struct task_struct *p;
++	struct task_struct *p = current;
++	int ret = 0;
 +
 +	*pvd = NULL;
 +
++	if (scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++	if (scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++
++socket_scope :
 +	/*
-+	 * Time to resolve the socket bound pvd (currently full indexes) to pvd pointers
-+	 * For now, only the 1st one matters
++	 * Time to resolve the socket bound pvd (currently full index) to pvd pointer
 +	 */
 +	if (sk->sk_n_bound_pvd == 0) {
++		/* inherit */
++		if (scope == -1) {
++			goto thread_scope;
++		}
++		return 0;
++	}
++
++	if (sk->sk_n_bound_pvd == -1) {
 +		/* forced to not use any pvd */
 +		return 0;
 +	}
-+	if (sk->sk_n_bound_pvd > 0) {
++	if (sk->sk_n_bound_pvd == 1) {
 +		rcu_read_lock();
 +		pvd_hold(*pvd = __pvd_get_by_fullindex(
 +					sock_net(sk),
-+					sk->sk_bound_pvds[0]));
++					sk->sk_bound_pvd));
 +		rcu_read_unlock();
 +		return *pvd == NULL ? -ENETUNREACH : 0;
 +	}
 +
++thread_scope :
 +	/*
-+	 * Check at the current thread level
++	 * Check at the current thread/process level
 +	 */
-+	if (current->n_bound_pvd == 0) {
-+		/* forced to not use any pvd */
-+		return 0;
-+	}
-+
-+	if (current->n_bound_pvd == 1 && current->bound_pvd != NULL) {
-+		rcu_read_lock();
-+		*pvd = __pvd_get_by_name(
++	rcu_read_lock();
++	if (scope == -1 || scope == PVD_BIND_SCOPE_THREAD) {
++		if (p->bound_pvd == INHERIT_PVD_PTR) {
++			if (scope == PVD_BIND_SCOPE_THREAD) {
++				goto rcu_out;
++			}
++			goto process_scope_rcu;
++		}
++		if (p->bound_pvd == FORCE_NO_PVD_PTR) {
++			goto rcu_out;
++		}
++		/*
++		 * A pvdname has been specified -> convert it to a
++		 * pvd. In this case (success or failure), we don't
++		 * want to loookup at the parent's level
++		 */
++		pvd_hold(*pvd = __pvd_get_by_name(
 +					sock_net(sk),
-+					current->bound_pvd,
++					p->bound_pvd,
 +					NULL,	/* dev */
-+					NULL);	/* lla */
-+		rcu_read_unlock();
-+		return *pvd == NULL ? -ENETUNREACH : 0;
++					NULL));	/* lla */
++		if (*pvd == NULL) {
++			ret = -ENETUNREACH;
++		}
++		goto rcu_out;
 +	}
 +
++process_scope :
++	rcu_read_lock();
++
++process_scope_rcu :
 +	/*
-+	 * Check at the process level (and up, as long as the thread
-+	 * group is the same) : we do it that way to cope with threads
-+	 * created prior to any setprocpvd() call
++	 * Find the parent
 +	 */
-+	rcu_read_lock();
-+	for (p = current->real_parent;
-+		p != NULL && p->tgid != current->tgid;
-+			p = p->real_parent) {
-+		if (p->n_bound_pvd == -1) {
-+			continue;	/* unspecified */
-+		}
-+		if (p->n_bound_pvd == 0) {
-+			rcu_read_unlock();
-+			return 0;	/* forced to not use any pvd */
-+		}
-+		if (p->bound_pvd != NULL) {
-+			*pvd = __pvd_get_by_name(
-+						sock_net(sk),
-+						p->bound_pvd,
-+						NULL,	/* dev */
-+						NULL);	/* lla */
-+			break;
-+		}
-+	}
-+	rcu_read_unlock();
-+
-+	return((p != NULL && *pvd == NULL) ? -ENETUNREACH : 0);
-+}
-+
-+EXPORT_SYMBOL(pvd_getboundpvd);
-+
-+/*
-+ * proc_setbindtopvd : specify a pvd the current process must
-+ * be bound to by default. pvd name resolution will happen
-+ * at a later stage, during the socket saddr resolution stage
-+ *
-+ * Inheritance of this bound pvd is done in the scheduler
-+ *
-+ * At a later stage, it will be possible to target a specific
-+ * pid (given that the caller has sufficient rights)
-+ *
-+ * USERLAND ABI
-+ */
-+int proc_setbindtopvd(
-+		struct sock *sk,
-+		char __user *optval,
-+		int optlen)
-+{
-+	int ret = -ENOPROTOOPT;
-+	char pvdname[PVDNAMSIZ];
-+	int unpvds = 0;
-+	struct bind_to_pvd __user *pbtp;
-+
-+	ret = -EINVAL;
-+	if (optlen < 0) {
-+		goto out;
++	while (p &&
++	       p->real_parent &&
++	       p->real_parent->tgid == current->tgid) {
++		p = p->real_parent;
 +	}
 +
-+	if (optlen != sizeof(struct bind_to_pvd *)) {
-+		goto out;
++	if (p == NULL) {
++		goto rcu_out;
 +	}
 +
-+	ret = -EFAULT;
-+	if (copy_from_user(&pbtp, optval, optlen)) {
-+		goto out;
++	if (p->bound_pvd == FORCE_NO_PVD_PTR ||
++	    p->bound_pvd == INHERIT_PVD_PTR) {
++		goto rcu_out;
 +	}
 +
-+	ret = -EINVAL;
-+	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds != -1 && unpvds != 0 && unpvds != 1) {
-+		goto out;
++	pvd_hold(*pvd = __pvd_get_by_name(
++				sock_net(sk),
++				p->bound_pvd,
++				NULL,	/* dev */
++				NULL));	/* lla */
++	if (*pvd == NULL) {
++		ret = -ENETUNREACH;
 +	}
-+
-+	rcu_read_lock();
-+	if (current->bound_pvd != NULL) {
-+		kfree(current->bound_pvd);
-+		current->bound_pvd = NULL;
-+	}
-+	current->n_bound_pvd = unpvds;
-+
-+	if (unpvds == 1) {
-+		int l = strncpy_from_user(pvdname, pbtp->pvdnames[0], PVDNAMSIZ - 1);
-+
-+		if (l < 0 || l == PVDNAMSIZ - 1) {
-+			ret = l < 0 ? l : -EINVAL;
-+			goto rcu_out;
-+		}
-+		if ((current->bound_pvd = kstrdup(pvdname, GFP_KERNEL)) == NULL) {
-+			ret = -ENOSPC;
-+			goto rcu_out;
-+		}
-+		/* TODO : call kfree() on process exit */
-+	}
-+
-+	ret = 0;
++	goto rcu_out;
 +
 +rcu_out :
 +	rcu_read_unlock();
 +
-+out :
 +	return ret;
 +}
 +
-+EXPORT_SYMBOL(proc_setbindtopvd);
++int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd)
++{
++	return _pvd_getboundpvd(sk, pvd, -1);
++}
 +
-+/*
-+ * release_bound_pvd : release a bound pvd structure
-+ */
-+
-+/*
-+ * ref_bound_pvd : add one reference to a bound pvd structure
-+ */
-+
-+/*
-+ * unref_bound_pvd : remove one reference to a bound pvd structure
-+ * If the refcount reaches 0, the structure is released
-+ */
++EXPORT_SYMBOL(pvd_getboundpvd);
 +
 +/*
 + * sock_setbindtopvd : a socket can be bound to at most one pvd
@@ -10133,101 +10107,126 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	int ret = -ENOPROTOOPT;
 +	struct net *net = sock_net(sk);
 +	char pvdname[PVDNAMSIZ];
-+	int i;
-+	int npvds = 0;
 +	int unpvds = 0;
 +	struct bind_to_pvd __user *pbtp;
-+	int boundpvds[MAXBOUNDPVD];
-+
-+	ret = -EINVAL;
++	struct task_struct *p;
++ 
 +	if (optlen < 0) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	/* Bind this socket to a set of pvds, specified in an array
-+	 * The pvds are identified (for now) by pvd names
-+	 * If the number of pvds is 0 or all pvd ids are invalid,
-+	 * the socket is not bound
-+	 * If the socket is already bound to pvds, they are replaced
-+	 * by the new specification
-+	 */
 +	if (optlen != sizeof(struct bind_to_pvd *)) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	memset(boundpvds, 0xFF, sizeof(boundpvds));
-+
-+	ret = -EFAULT;
 +	if (copy_from_user(&pbtp, optval, optlen)) {
-+		goto out;
++		return -EFAULT;
 +	}
 +
-+	ret = -EINVAL;
 +	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds < 0 || unpvds > MAXBOUNDPVD) {
-+		goto out;
++	if (unpvds != -1 && unpvds != 0 && unpvds != 1) {
++		return -EINVAL;
++	}
++
++	if (unpvds == 1) {
++		int l = strncpy_from_user(pvdname, pbtp->pvdname, PVDNAMSIZ - 1);
++
++		if (l <= 0 || l == PVDNAMSIZ - 1) {
++			ret = l < 0 ? l : -EINVAL;
++			return ret;
++		}
 +	}
 +
 +	rcu_read_lock();
-+	for (i = 0; i < unpvds; i++) {
-+		struct net_pvd *pvd;
-+		int l = strncpy_from_user(pvdname, pbtp->pvdnames[i], PVDNAMSIZ - 1);
-+
-+		if (l < 0 || l == PVDNAMSIZ - 1) {
-+			ret = l < 0 ? l : -EINVAL;
-+			rcu_read_unlock();
-+			goto out;
-+		}
-+		if (l == 0) {
-+			continue;	/* empty name : simply ignore it */
-+		}
-+		if ((pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL)) == NULL) {
-+			break;
-+		}
-+		/* Take one reference on the pvd */
-+		pvd_hold(pvd);
-+
-+		boundpvds[npvds++] = pvd_get_fullindex(pvd);
-+	}
-+
-+	if (npvds != unpvds) {
-+		/*
-+		 * An unknown pvd has been specified. Unregister
-+		 * all the registered ones
-+		 */
-+		for (i = 0; i < npvds; i++) {
-+			pvd_put(__pvd_get_by_fullindex(
-+						net,
-+						boundpvds[i]));
-+		}
-+		ret = -ENETUNREACH;
-+		rcu_read_unlock();
-+		goto out;
-+	}
-+
-+	/* Reset any previous bindings */
-+	lock_sock(sk);
-+
-+	for (i = 0; i < sk->sk_n_bound_pvd; i++) {
-+		pvd_put(__pvd_get_by_fullindex(
-+					net,
-+					sk->sk_bound_pvds[i]));
-+	}
-+
-+	/* And update the new ones (possibly none) */
-+	sk->sk_n_bound_pvd = npvds;
-+	memcpy(sk->sk_bound_pvds, boundpvds, sizeof(sk->sk_bound_pvds));
-+	sk_dst_reset(sk);
-+	release_sock(sk);
-+
-+	rcu_read_unlock();
 +
 +	ret = 0;
 +
-+out:
++	if (pbtp->scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++
++	ret = -EINVAL;
++	goto rcu_out;
++
++	/* --------------------- THREAD SCOPE ------------------ */
++thread_scope :
++	p = current;
++	goto handle_process_thread_scope;
++
++	/* --------------------- PROCESS SCOPE ----------------- */
++process_scope :
++	for (p = current;
++		p && p->real_parent && p->real_parent->tgid == current->tgid;
++		    p = p->real_parent);
++
++handle_process_thread_scope :
++	if (p) {
++		if (p->bound_pvd != FORCE_NO_PVD_PTR &&
++			p->bound_pvd != INHERIT_PVD_PTR) {
++			kfree(p->bound_pvd);
++			p->bound_pvd = INHERIT_PVD_PTR;
++		}
++		if (unpvds == -1) {
++			p->bound_pvd = INHERIT_PVD_PTR;
++		} else
++		if (unpvds == 0) {
++			p->bound_pvd = FORCE_NO_PVD_PTR;
++		}
++		else {
++			if (! (p->bound_pvd = kstrdup(pvdname, GFP_KERNEL))) {
++				p->bound_pvd = FORCE_NO_PVD_PTR;
++				ret = -ENOSPC;
++				goto rcu_out;
++			}
++		}
++		
++	}
++
++	goto rcu_out;
++
++	/* --------------------- SOCKET SCOPE ------------------ */
++socket_scope :
++	ret = 0;
++	lock_sock(sk);
++
++	if (unpvds == -1) {
++		sk->sk_n_bound_pvd = 0;
++	} else
++	if (unpvds == 0) {
++		sk->sk_n_bound_pvd = -1;
++	} else
++	if (unpvds == 1) {
++		struct net_pvd *pvd;
++
++		sk->sk_n_bound_pvd = unpvds;
++
++		if (! (pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL))) {
++			sk->sk_n_bound_pvd = -1;	/* force no pvd */
++			ret = -ENETUNREACH;
++		}
++		else {
++			sk->sk_bound_pvd = pvd_get_fullindex(pvd);
++		}
++	}
++	sk_dst_reset(sk);
++	release_sock(sk);
++
++rcu_out :
++	rcu_read_unlock();
++
 +	return ret;
 +}
 +
++/*
++ * sock_getbindtopvd : return the currently bound pvd for the
++ * specified scope.
++ *
++ * The scope is a strict hint here (contrary to the pvd_getboundpvd()
++ * kernel only call). This means that we don't want to fallback to
++ * higher level of the hierarchy (socket -> thread -> process)
++ *
++ * USERLAND ABI
++ */
 +int sock_getbindtopvd(
 +		struct sock *sk,
 +		char __user *optval,
@@ -10235,58 +10234,43 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +		int len)
 +{
 +	int ret = -ENOPROTOOPT;
-+	struct net *net = sock_net(sk);
-+	int boundpvds[DIM(sk->sk_bound_pvds)];
 +	struct bind_to_pvd __user *pbtp;
-+	int unpvds;
-+	int i, n, npvds, l;
++	int l;
++	struct net_pvd *pvd;
 +
-+	ret = -EINVAL;
 +	if (len != sizeof(struct bind_to_pvd *)) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	ret = -EFAULT;
 +	if (copy_from_user(&pbtp, optval, len)) {
-+		goto out;
-+	}
-+
-+	ret = -EINVAL;
-+	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds < 0 || unpvds > MAXBOUNDPVD) {	// npvd will be updated
-+		goto out;
++		return -EFAULT;
 +	}
 +
 +	lock_sock(sk);
-+
-+	npvds = sk->sk_n_bound_pvd;
-+	memcpy(boundpvds, sk->sk_bound_pvds, sizeof(sk->sk_bound_pvds));
-+
++	ret = _pvd_getboundpvd(sk, &pvd, pbtp->scope);
 +	release_sock(sk);
-+
-+	rcu_read_lock();
-+	for (n = 0, i = 0; i < npvds && i < unpvds; i++) {
-+		struct net_pvd *pvd;
-+
-+		if ((pvd = __pvd_get_by_fullindex(net, boundpvds[i])) != NULL) {
-+			if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
-+				l = PVDNAMSIZ - 1;
-+			}
-+			ret = -EFAULT;
-+			if (copy_to_user(pbtp->pvdnames[n],
-+					 pvd->name, l + 1)) {
-+				rcu_read_unlock();
-+				goto out;
-+			}
-+			n++;
-+		}
++	if (ret != 0) {
++		return ret;
 +	}
-+	put_user(n, &pbtp->npvd);
 +
-+	rcu_read_unlock();
++	if (pvd != NULL) {
++		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++			l = PVDNAMSIZ - 1;	/* should not happen */
++		}
++		if (copy_to_user(pbtp->pvdname,
++				 pvd->name, l + 1)) {
++			ret = -EFAULT;
++		}
++		pvd_put(pvd);
++	}
 +
-+	ret = 0;
-+out :
++	if (pvd != NULL && ret == 0) {
++		put_user(1, &pbtp->npvd);
++	}
++	else {
++		put_user(0, &pbtp->npvd);
++	}
++
 +	return ret;
 +}
 +
@@ -11261,7 +11245,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net/core/sock.c
 --- linux-4.10.7-orig/net/core/sock.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/core/sock.c	2017-09-25 18:14:21.618160786 +0200
++++ linux-4.10.7/net/core/sock.c	2017-09-26 11:11:58.139239484 +0200
 @@ -106,6 +106,10 @@
  #include <linux/string.h>
  #include <linux/sockios.h>
@@ -11273,13 +11257,11 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  #include <linux/mm.h>
  #include <linux/slab.h>
  #include <linux/interrupt.h>
-@@ -671,6 +675,15 @@
+@@ -671,6 +675,13 @@
  	if (optname == SO_BINDTODEVICE)
  		return sock_setbindtodevice(sk, optval, optlen);
  
 +#ifdef	CONFIG_NETPVD
-+	if (optname == SO_BINDPROCTOPVD)
-+		return proc_setbindtopvd(sk, optval, optlen);
 +	if (optname == SO_BINDTOPVD)
 +		return sock_setbindtopvd(sk, optval, optlen);
 +	if (optname == SO_CREATEPVD)
@@ -11289,7 +11271,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  	if (optlen < sizeof(int))
  		return -EINVAL;
  
-@@ -1238,6 +1251,21 @@
+@@ -1238,6 +1249,21 @@
  	case SO_BINDTODEVICE:
  		return sock_getbindtodevice(sk, optval, optlen, len);
  
@@ -11311,7 +11293,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  	case SO_GET_FILTER:
  		len = sk_get_filter(sk, (struct sock_filter __user *)optval, len);
  		if (len < 0)
-@@ -2515,6 +2543,10 @@
+@@ -2515,6 +2541,10 @@
  	sk->sk_ll_usec		=	sysctl_net_busy_read;
  #endif
  
@@ -13352,7 +13334,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/udp.c linux-4.10.7/net/ipv6/udp.c
 --- linux-4.10.7-orig/net/ipv6/udp.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/udp.c	2017-09-25 17:45:02.971058298 +0200
++++ linux-4.10.7/net/ipv6/udp.c	2017-09-27 09:53:05.385222971 +0200
 @@ -1019,6 +1019,10 @@
  	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
  	struct sockcm_cookie sockc;
@@ -13371,12 +13353,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/udp.c linux-4.10.7/net/
 +#ifdef	CONFIG_NETPVD
 +	/*
 +	 * fl6.pvd will only be used during the route and
-+	 * source address selection of the connect() process
++	 * source address selection process
 +	 *
 +	 * We can and must pvd_put() it before returning
 +	 */
 +	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
-+		goto out;
++		return err;
 +	}
 +	printk("udpv6_sendmsg : pvd %s selected\n",
 +			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>");
