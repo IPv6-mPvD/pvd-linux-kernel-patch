@@ -8406,7 +8406,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +#endif		/* _NET_PVD_H */
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/include/net/sock.h
 --- linux-4.10.7-orig/include/net/sock.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/net/sock.h	2017-09-26 12:22:05.218859573 +0200
++++ linux-4.10.7/include/net/sock.h	2017-10-02 10:52:38.775725181 +0200
 @@ -129,6 +129,7 @@
   *	@skc_reuse: %SO_REUSEADDR setting
   *	@skc_reuseport: %SO_REUSEPORT setting
@@ -8420,8 +8420,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/
  	unsigned char		skc_net_refcnt:1;
  	int			skc_bound_dev_if;
 +#ifdef	CONFIG_NETPVD
-+	int			skc_n_bound_pvd;	/* 0 : inherit, -1 : unset, 1 : set */
-+	int			skc_bound_pvd;
++	int			skc_pvd_bind_type;	/* 0 : inherit, 1 : unset, 2 : set */
++	int			skc_bound_pvd;		/* pvd index if type == 2 */
 +#endif
  	union {
  		struct hlist_node	skc_bind_node;
@@ -8430,7 +8430,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/sock.h linux-4.10.7/
  #define sk_ipv6only		__sk_common.skc_ipv6only
  #define sk_net_refcnt		__sk_common.skc_net_refcnt
  #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
-+#define sk_n_bound_pvd		__sk_common.skc_n_bound_pvd
++#define sk_pvd_bind_type	__sk_common.skc_pvd_bind_type
 +#define sk_bound_pvd		__sk_common.skc_bound_pvd
  #define sk_bind_node		__sk_common.skc_bind_node
  #define sk_prot			__sk_common.skc_prot
@@ -8473,8 +8473,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/Kbuild linux-
  header-y += quota.h
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h linux-4.10.7/include/uapi/linux/pvd-user.h
 --- linux-4.10.7-orig/include/uapi/linux/pvd-user.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/uapi/linux/pvd-user.h	2017-09-26 11:29:35.185893931 +0200
-@@ -0,0 +1,198 @@
++++ linux-4.10.7/include/uapi/linux/pvd-user.h	2017-10-02 10:42:36.494687484 +0200
+@@ -0,0 +1,189 @@
 +/*
 + * This header file contains definitions for use when exchanging
 + * data with the user space
@@ -8482,8 +8482,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 + * The same file will also be installed for use by user space
 + * applications
 + *
-+ * SO_GETPVDINFO, SO_BINDTOPVD and SO_GETRALIST are defined in
-+ * another uapi header file (asm-generic/socket.h)
++ * SO_BINDTOPVD and Co are defined in another uapi header file
++ * (asm-generic/socket.h)
 + */
 +#ifndef	_UAPI_LINUX_PVD_USER_H
 +#define	_UAPI_LINUX_PVD_USER_H
@@ -8527,9 +8527,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +#endif
 +
 +/*
-+ * For SO_GETPVDINFO (which returns in one call all pvd and
-+ * their attributes) or SO_GETPVDATTRIBUTES (which returns
-+ * the attributes for a given PvD)
++ * For SO_GETPVDATTRIBUTES (which returns the attributes for a pvd)
 + *
 + * The net_pvd_attribute structure below is a copy of the
 + * kernel space pvd structure, with kernel specific items
@@ -8571,14 +8569,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +	struct in6_addr		rdnss[MAXRDNSSPERPVD];
 +};
 +
-+struct pvd_list {
-+	int npvd;	/* in/out */
-+	char pvds[MAXPVD][PVDNAMSIZ];
-+};
-+
 +struct pvd_attr {
 +	char __user *pvdname;	/* in */
 +	struct net_pvd_attribute *pvdattr;	/* out */
++};
++
++/*
++ * For SO_GETPVDLIST (returns the list of pvds)
++ */
++struct pvd_list {
++	int npvd;	/* in/out */
++	char pvds[MAXPVD][PVDNAMSIZ];
 +};
 +
 +/*
@@ -8588,15 +8589,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +#define	PVD_BIND_SCOPE_THREAD	1
 +#define	PVD_BIND_SCOPE_PROCESS	2
 +
++#define	PVD_BIND_INHERIT	0
++#define	PVD_BIND_NOPVD		1
++#define	PVD_BIND_ONEPVD		2
++
 +struct bind_to_pvd {
-+	int scope;
-+	/*
-+	 * npvd : in
-+	 * -1 : inherit
-+	 *  0 : forcibly unset
-+	 *  1 : forcibly set
-+	 */
-+	int npvd;
++	int scope;	/* PVD_BIND_SCOPE_XXX */
++	int bindtype;	/* PVD_BIND_INHERIT, ... */
 +	char pvdname[PVDNAMSIZ];
 +};
 +
@@ -8616,14 +8615,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +#define	PVD_ATTR_HFLAG		0x02
 +#define	PVD_ATTR_LFLAG		0x04
 +#define	PVD_ATTR_DEPRECATED	0x08
-+
-+/*
-+ * For SO_RT6PVD
-+ */
-+struct in6_rt_pvdmsg {
-+	char pvdname[PVDNAMSIZ];
-+	struct in6_rtmsg rtmsg;
-+};
 +
 +/*
 + * RTNETLINK related definitions
@@ -8651,7 +8642,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/uapi/linux/pvd-user.h li
 +};
 +
 +struct rdnssmsg {
-+	char	pvd_name[PVDNAMSIZ];
++	char		pvd_name[PVDNAMSIZ];
 +	struct in6_addr	rdnss;
 +	int		rdnss_state;	/* NEW, DEL */
 +};
@@ -8856,8 +8847,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/Makefile linux-4.10.7/n
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/core/pvd.c
 --- linux-4.10.7-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/net/core/pvd.c	2017-10-02 09:58:30.426027166 +0200
-@@ -0,0 +1,2384 @@
++++ linux-4.10.7/net/core/pvd.c	2017-10-02 11:04:47.304793742 +0200
+@@ -0,0 +1,2376 @@
 +/*
 + */
 +
@@ -9972,19 +9963,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	/*
 +	 * Time to resolve the socket bound pvd (currently full index) to pvd pointer
 +	 */
-+	if (sk->sk_n_bound_pvd == 0) {
-+		/* inherit */
++	if (sk->sk_pvd_bind_type == PVD_BIND_INHERIT) {
 +		if (scope == -1) {
 +			goto thread_scope;
 +		}
 +		return 0;
 +	}
 +
-+	if (sk->sk_n_bound_pvd == -1) {
-+		/* forced to not use any pvd */
++	if (sk->sk_pvd_bind_type == PVD_BIND_NOPVD) {
 +		return 0;
 +	}
-+	if (sk->sk_n_bound_pvd == 1) {
++	if (sk->sk_pvd_bind_type == PVD_BIND_ONEPVD) {
 +		rcu_read_lock();
 +		pvd_hold(*pvd = __pvd_get_by_fullindex(
 +					sock_net(sk),
@@ -10109,7 +10098,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	int ret = -ENOPROTOOPT;
 +	struct net *net = sock_net(sk);
 +	char pvdname[PVDNAMSIZ];
-+	int unpvds = 0;
++	int ubindtype;
 +	struct bind_to_pvd __user *pbtp;
 +	struct task_struct *p;
 + 
@@ -10125,12 +10114,14 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +		return -EFAULT;
 +	}
 +
-+	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds != -1 && unpvds != 0 && unpvds != 1) {
++	get_user(ubindtype, &pbtp->bindtype);
++	if (ubindtype != PVD_BIND_INHERIT &&
++	    ubindtype != PVD_BIND_NOPVD &&
++	    ubindtype != PVD_BIND_ONEPVD) {
 +		return -EINVAL;
 +	}
 +
-+	if (unpvds == 1) {
++	if (ubindtype == PVD_BIND_ONEPVD) {
 +		int l = strncpy_from_user(pvdname, pbtp->pvdname, PVDNAMSIZ - 1);
 +
 +		if (l <= 0 || l == PVDNAMSIZ - 1) {
@@ -10168,9 +10159,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +			kfree(p->bound_pvd);
 +			p->bound_pvd = INHERIT_PVD_PTR;
 +		}
-+		if (unpvds == -1) {
++		if (ubindtype == PVD_BIND_INHERIT) {
 +			p->bound_pvd = INHERIT_PVD_PTR;
-+		} else if (unpvds == 0) {
++		} else if (ubindtype == PVD_BIND_NOPVD) {
 +			p->bound_pvd = FORCE_NO_PVD_PTR;
 +		}
 +		else {
@@ -10190,17 +10181,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +	ret = 0;
 +	lock_sock(sk);
 +
-+	if (unpvds == -1) {
-+		sk->sk_n_bound_pvd = 0;		/* inherit */
-+	} else if (unpvds == 0) {
-+		sk->sk_n_bound_pvd = -1;	/* force no pvd */
-+	} else if (unpvds == 1) {
++	sk->sk_pvd_bind_type = ubindtype;
++
++	if (ubindtype == PVD_BIND_ONEPVD) {
 +		struct net_pvd *pvd;
 +
-+		sk->sk_n_bound_pvd = unpvds;
-+
 +		if (! (pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL))) {
-+			sk->sk_n_bound_pvd = -1;	/* force no pvd */
++			sk->sk_pvd_bind_type = PVD_BIND_NOPVD;
 +			ret = -ENETUNREACH;
 +		}
 +		else {
@@ -10261,16 +10248,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +			ret = -EFAULT;
 +		}
 +		pvd_put(pvd);
++		put_user(PVD_BIND_ONEPVD, &pbtp->bindtype);
++	} else {
++		put_user(PVD_BIND_NOPVD, &pbtp->bindtype);
 +	}
 +
-+	if (pvd != NULL && ret == 0) {
-+		put_user(1, &pbtp->npvd);
-+	}
-+	else {
-+		put_user(0, &pbtp->npvd);
-+	}
-+
-+	return ret;
++	return 0;
 +}
 +
 +/*
@@ -11244,7 +11227,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net/core/sock.c
 --- linux-4.10.7-orig/net/core/sock.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/core/sock.c	2017-09-26 11:11:58.139239484 +0200
++++ linux-4.10.7/net/core/sock.c	2017-10-02 10:51:10.258199062 +0200
 @@ -106,6 +106,10 @@
  #include <linux/string.h>
  #include <linux/sockios.h>
@@ -11297,7 +11280,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/sock.c linux-4.10.7/net
  #endif
  
 +#ifdef	CONFIG_NET_PVD
-+	sk->sk_n_bound_pvd	=	-1;	/* no bindings defined yet */
++	sk->sk_pvd_bind_type	=	0;
 +#endif
 +
  	sk->sk_max_pacing_rate = ~0U;
@@ -12660,7 +12643,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/netfilter/nf_nat_masque
  	nfct_nat(ct)->masq_index = out->ifindex;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/net/ipv6/route.c
 --- linux-4.10.7-orig/net/ipv6/route.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/route.c	2017-10-02 09:53:17.209755597 +0200
++++ linux-4.10.7/net/ipv6/route.c	2017-10-02 11:17:29.836494203 +0200
 @@ -36,6 +36,7 @@
  #include <linux/net.h>
  #include <linux/route.h>
@@ -12915,21 +12898,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	return ip6_pol_route(net, table, fl6->flowi6_oif, fl6, flags);
  }
  
-@@ -1195,6 +1283,8 @@
- {
- 	bool any_src;
- 
-+	printk("ip6_route_output_flags called\n");	// CONFIG_NETPVD T.DANIS
-+
- 	if (rt6_need_strict(&fl6->daddr)) {
- 		struct dst_entry *dst;
- 
-@@ -1210,6 +1300,12 @@
+@@ -1210,6 +1298,12 @@
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
 +#ifdef	CONFIG_NETPVD
-+	if (sk && sk->sk_n_bound_pvd > 0 && fl6->pvd) {
++	if (sk && sk->sk_pvd_bind_type == PVD_BIND_ONEPVD && fl6->pvd) {
 +		flags |= RT6_LOOKUP_F_PVD;
 +	}
 +#endif
@@ -12937,7 +12911,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -1821,7 +1917,7 @@
+@@ -1821,7 +1915,7 @@
  	return rt;
  }
  
@@ -12946,7 +12920,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  {
  	struct net *net = cfg->fc_nlinfo.nl_net;
  	struct rt6_info *rt = NULL;
-@@ -2072,25 +2168,34 @@
+@@ -2072,25 +2166,34 @@
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
@@ -12983,7 +12957,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		rt = NULL;
-@@ -2395,18 +2500,23 @@
+@@ -2395,18 +2498,23 @@
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -13009,7 +12983,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  {
  	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
  	struct rt6_info *rt;
-@@ -2426,6 +2536,7 @@
+@@ -2426,6 +2534,7 @@
  	if (rt)
  		dst_hold(&rt->dst);
  	read_unlock_bh(&table->tb6_lock);
@@ -13017,7 +12991,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	return rt;
  }
  
-@@ -2445,8 +2556,11 @@
+@@ -2445,8 +2554,11 @@
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -13030,7 +13004,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  		struct fib6_table *table;
  
  		table = fib6_get_table(dev_net(dev), cfg.fc_table);
-@@ -2539,7 +2653,7 @@
+@@ -2539,7 +2651,7 @@
  		rtnl_lock();
  		switch (cmd) {
  		case SIOCADDRT:
@@ -13039,7 +13013,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  			break;
  		case SIOCDELRT:
  			err = ip6_route_del(&cfg);
-@@ -2610,7 +2724,9 @@
+@@ -2610,7 +2722,9 @@
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
@@ -13050,7 +13024,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  {
  	u32 tb_id;
  	struct net *net = dev_net(idev->dev);
-@@ -2633,6 +2749,9 @@
+@@ -2633,6 +2747,9 @@
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
@@ -13060,7 +13034,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
  	if (anycast)
-@@ -2922,6 +3041,28 @@
+@@ -2922,6 +3039,28 @@
  			goto errout;
  	}
  
@@ -13089,7 +13063,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -3028,7 +3169,7 @@
+@@ -3028,7 +3167,7 @@
  				r_cfg.fc_encap_type = nla_get_u16(nla);
  		}
  
@@ -13098,7 +13072,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  		if (IS_ERR(rt)) {
  			err = PTR_ERR(rt);
  			rt = NULL;
-@@ -3154,7 +3295,7 @@
+@@ -3154,7 +3293,7 @@
  	if (cfg.fc_mp)
  		return ip6_route_multipath_add(&cfg);
  	else
@@ -13107,7 +13081,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  }
  
  static inline size_t rt6_nlmsg_size(struct rt6_info *rt)
-@@ -3290,7 +3431,7 @@
+@@ -3290,7 +3429,7 @@
  				goto nla_put_failure;
  	} else if (dst) {
  		struct in6_addr saddr_buf;
@@ -13116,7 +13090,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
  			goto nla_put_failure;
  	}
-@@ -3330,6 +3471,22 @@
+@@ -3330,6 +3469,22 @@
  	if (lwtunnel_fill_encap(skb, rt->dst.lwtstate) < 0)
  		goto nla_put_failure;
  
