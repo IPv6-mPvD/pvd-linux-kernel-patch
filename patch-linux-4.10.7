@@ -7984,7 +7984,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ip6_fib.h linux-4.10
  static inline struct inet6_dev *ip6_dst_idev(struct dst_entry *dst)
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ip6_route.h linux-4.10.7/include/net/ip6_route.h
 --- linux-4.10.7-orig/include/net/ip6_route.h	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/include/net/ip6_route.h	2017-09-11 11:35:47.305330646 +0200
++++ linux-4.10.7/include/net/ip6_route.h	2017-10-02 17:45:25.494283561 +0200
 @@ -34,6 +34,10 @@
  #define RT6_LOOKUP_F_SRCPREF_COA	0x00000020
  #define RT6_LOOKUP_F_IGNORE_LINKSTATE	0x00000040
@@ -7996,15 +7996,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ip6_route.h linux-4.
  /* We do not (yet ?) support IPv6 jumbograms (RFC 2675)
   * Unlike IPv4, hdr->seg_len doesn't include the IPv6 header
   */
-@@ -89,13 +93,14 @@
- 
- int ipv6_route_ioctl(struct net *net, unsigned int cmd, void __user *arg);
- 
--int ip6_route_add(struct fib6_config *cfg);
-+int ip6_route_add(struct fib6_config *cfg, const char *caller);
- int ip6_ins_rt(struct rt6_info *);
- int ip6_del_rt(struct rt6_info *);
- 
+@@ -96,6 +100,7 @@
  static inline int ip6_route_get_saddr(struct net *net, struct rt6_info *rt,
  				      const struct in6_addr *daddr,
  				      unsigned int prefs,
@@ -8021,19 +8013,18 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/ip6_route.h linux-4.
  
  	return err;
  }
-@@ -120,7 +125,10 @@
+@@ -120,7 +125,9 @@
  void fib6_force_start_gc(struct net *net);
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
 -				    const struct in6_addr *addr, bool anycast);
 +				    const struct in6_addr *addr,
 +				    void *pvd,	/* CONFIG_NETPVD */
-+				    bool anycast,
-+				    const char *caller);
++				    bool anycast);
  
  struct rt6_info *ip6_dst_alloc(struct net *net, struct net_device *dev,
  			       int flags);
-@@ -137,7 +145,12 @@
+@@ -137,7 +144,12 @@
  void rt6_purge_dflt_routers(struct net *net);
  
  int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
@@ -8194,8 +8185,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/net_namespace.h linu
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/include/net/pvd.h
 --- linux-4.10.7-orig/include/net/pvd.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/include/net/pvd.h	2017-09-26 11:12:13.366990289 +0200
-@@ -0,0 +1,208 @@
++++ linux-4.10.7/include/net/pvd.h	2017-10-02 17:39:04.428414427 +0200
+@@ -0,0 +1,207 @@
 +
 +#ifndef	_NET_PVD_H
 +#define	_NET_PVD_H
@@ -8349,8 +8340,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/include/net/pvd.h linux-4.10.7/i
 +extern void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt);
 +extern int pvd_migrate_route(
 +		struct net_pvd *newpvd,
-+		struct rt6_info *rt,
-+		const char *func);
++		struct rt6_info *rt);
 +extern int pvd_migrate_addr(
 +		struct net_pvd *newpvd,
 +		struct inet6_ifaddr *addr);
@@ -8847,8 +8837,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/Makefile linux-4.10.7/n
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/core/pvd.c
 --- linux-4.10.7-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-4.10.7/net/core/pvd.c	2017-10-02 11:04:47.304793742 +0200
-@@ -0,0 +1,2376 @@
++++ linux-4.10.7/net/core/pvd.c	2017-10-02 17:38:23.859067136 +0200
+@@ -0,0 +1,2374 @@
 +/*
 + */
 +
@@ -9497,8 +9487,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 + */
 +int	pvd_migrate_route(
 +		struct net_pvd *newpvd,
-+		struct rt6_info *rt,
-+		const char *func)
++		struct rt6_info *rt)
 +{
 +	int		i;
 +	int		deltaCount = 0;
@@ -9511,12 +9500,11 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/pvd.c linux-4.10.7/net/
 +
 +	oldpvd = rt->rt6i_pvd;
 +
-+	printk("pvd_migrate_route(pvd = %s, oldpvd = %s, rt = %p, dev = %s) called by %s\n",
++	printk("pvd_migrate_route(pvd = %s, oldpvd = %s, rt = %p, dev = %s)\n",
 +		newpvd ? newpvd->name : "<no pvd>",
 +		oldpvd ? oldpvd->name : "<no pvd>",
 +		rt,
-+		rt->dst.dev ? rt->dst.dev->name : "",
-+		func);
++		rt->dst.dev ? rt->dst.dev->name : "");
 +
 +	if (newpvd == oldpvd) {
 +		return(0);
@@ -11311,7 +11299,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/core/utils.c linux-4.10.7/ne
 +EXPORT_SYMBOL(addr6tostr);
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7/net/ipv6/addrconf.c
 --- linux-4.10.7-orig/net/ipv6/addrconf.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/addrconf.c	2017-10-01 18:28:34.013566249 +0200
++++ linux-4.10.7/net/ipv6/addrconf.c	2017-10-02 17:43:00.931609392 +0200
 @@ -80,6 +80,11 @@
  #include <net/tcp.h>
  #include <net/ip.h>
@@ -11336,18 +11324,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	kfree_rcu(ifp, rcu);
  }
  
-@@ -939,7 +949,9 @@
+@@ -939,7 +949,8 @@
  static struct inet6_ifaddr *
  ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  	      const struct in6_addr *peer_addr, int pfxlen,
 -	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft)
 +	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft,
-+	      void *pvd,
-+	      const char *caller)
++	      void *pvd)
  {
  	struct inet6_ifaddr *ifa = NULL;
  	struct rt6_info *rt;
-@@ -947,6 +959,17 @@
+@@ -947,6 +958,17 @@
  	int err = 0;
  	int addr_type = ipv6_addr_type(addr);
  
@@ -11365,16 +11352,16 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	if (addr_type == IPV6_ADDR_ANY ||
  	    addr_type & IPV6_ADDR_MULTICAST ||
  	    (!(idev->dev->flags & IFF_LOOPBACK) &&
-@@ -981,7 +1004,7 @@
+@@ -981,7 +1003,7 @@
  		goto out;
  	}
  
 -	rt = addrconf_dst_alloc(idev, addr, false);
-+	rt = addrconf_dst_alloc(idev, addr, pvd, false, caller);
++	rt = addrconf_dst_alloc(idev, addr, pvd, false);
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		goto out;
-@@ -1003,6 +1026,12 @@
+@@ -1003,6 +1025,12 @@
  	ifa->prefered_lft = prefered_lft;
  	ifa->cstamp = ifa->tstamp = jiffies;
  	ifa->tokenized = false;
@@ -11387,7 +11374,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	ifa->rt = rt;
  
-@@ -1027,6 +1056,7 @@
+@@ -1027,6 +1055,7 @@
  	}
  
  	in6_ifa_hold(ifa);
@@ -11395,18 +11382,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	write_unlock(&idev->lock);
  out2:
  	rcu_read_unlock_bh();
-@@ -1288,7 +1318,9 @@
+@@ -1288,7 +1317,8 @@
  
  	ift = ipv6_add_addr(idev, &addr, NULL, tmp_plen,
  			    ipv6_addr_scope(&addr), addr_flags,
 -			    tmp_valid_lft, tmp_prefered_lft);
 +			    tmp_valid_lft, tmp_prefered_lft,
-+			    ifp->pvd,
-+			    __func__);	/* same pvd */
++			    ifp->pvd);	/* same pvd */
  	if (IS_ERR(ift)) {
  		in6_ifa_put(ifp);
  		in6_dev_put(idev);
-@@ -1347,6 +1379,7 @@
+@@ -1347,6 +1377,7 @@
  	int ifindex;
  	int scope;
  	int label;
@@ -11414,7 +11400,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	unsigned int prefs;
  };
  
-@@ -1446,7 +1479,13 @@
+@@ -1446,7 +1477,13 @@
  	    }
  #endif
  	case IPV6_SADDR_RULE_OIF:
@@ -11429,7 +11415,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		ret = (!dst->ifindex ||
  		       dst->ifindex == score->ifa->idev->dev->ifindex);
  		break;
-@@ -1603,6 +1642,7 @@
+@@ -1603,6 +1640,7 @@
  
  int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
  		       const struct in6_addr *daddr, unsigned int prefs,
@@ -11437,7 +11423,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		       struct in6_addr *saddr)
  {
  	struct ipv6_saddr_score scores[2], *hiscore;
-@@ -1615,6 +1655,7 @@
+@@ -1615,6 +1653,7 @@
  
  	dst_type = __ipv6_addr_type(daddr);
  	dst.addr = daddr;
@@ -11445,30 +11431,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	dst.ifindex = dst_dev ? dst_dev->ifindex : 0;
  	dst.scope = __ipv6_addr_src_scope(dst_type);
  	dst.label = ipv6_addr_label(net, daddr, dst_type, dst.ifindex);
-@@ -1623,6 +1664,11 @@
- 	scores[hiscore_idx].rule = -1;
- 	scores[hiscore_idx].ifa = NULL;
- 
-+#ifdef	CONFIG_NETPVD
-+	printk("ipv6_dev_get_saddr : pvd = %s\n",
-+		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
-+#endif
-+
- 	rcu_read_lock();
- 
- 	/* Candidate Source Address (section 4)
-@@ -1975,7 +2021,9 @@
+@@ -1975,7 +2014,8 @@
  
  		ifp2 = ipv6_add_addr(idev, &new_addr, NULL, pfxlen,
  				     scope, flags, valid_lft,
 -				     preferred_lft);
 +				     preferred_lft,
-+				     ifp->pvd,
-+				     __func__);	/* same pvd */
++				     ifp->pvd);	/* same pvd */
  		if (IS_ERR(ifp2))
  			goto lock_errdad;
  
-@@ -2216,7 +2264,8 @@
+@@ -2216,7 +2256,8 @@
  
  static void
  addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
@@ -11478,7 +11451,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_PREFIX,
-@@ -2230,6 +2279,9 @@
+@@ -2230,6 +2271,9 @@
  	};
  
  	cfg.fc_dst = *pfx;
@@ -11488,16 +11461,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	/* Prevent useless cloning on PtP SIT.
  	   This thing is done here expecting that the whole
-@@ -2240,7 +2292,7 @@
- 		cfg.fc_flags |= RTF_NONEXTHOP;
- #endif
- 
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
- }
- 
- 
-@@ -2282,7 +2334,7 @@
+@@ -2282,7 +2326,7 @@
  
  /* Create "default" multicast route to the interface */
  
@@ -11506,7 +11470,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_LOCAL,
-@@ -2294,11 +2346,14 @@
+@@ -2294,11 +2338,14 @@
  	};
  
  	ipv6_addr_set(&cfg.fc_dst, htonl(0xFF000000), 0, 0, 0);
@@ -11514,8 +11478,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
 +	cfg.fc_pvd = pvd;
 +#endif
  
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
+ 	ip6_route_add(&cfg);
  }
  
 -static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
@@ -11523,7 +11486,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct inet6_dev *idev;
  
-@@ -2313,7 +2368,7 @@
+@@ -2313,7 +2360,7 @@
  
  	/* Add default multicast route */
  	if (!(dev->flags & IFF_LOOPBACK) && !netif_is_l3_master(dev))
@@ -11532,7 +11495,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	return idev;
  }
-@@ -2396,7 +2451,8 @@
+@@ -2396,7 +2443,8 @@
  				 struct inet6_dev *in6_dev,
  				 const struct in6_addr *addr, int addr_type,
  				 u32 addr_flags, bool sllao, bool tokenized,
@@ -11542,18 +11505,17 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct inet6_ifaddr *ifp = ipv6_get_ifaddr(net, addr, dev, 1);
  	int create = 0, update_lft = 0;
-@@ -2419,7 +2475,9 @@
+@@ -2419,7 +2467,8 @@
  					    pinfo->prefix_len,
  					    addr_type&IPV6_ADDR_SCOPE_MASK,
  					    addr_flags, valid_lft,
 -					    prefered_lft);
 +					    prefered_lft,
-+					    pvd,
-+					    __func__);	/* pvd will be updated below */
++					    pvd);	/* pvd will be updated below */
  
  		if (IS_ERR_OR_NULL(ifp))
  			return -1;
-@@ -2439,6 +2497,11 @@
+@@ -2439,6 +2488,11 @@
  		unsigned long now;
  		u32 stored_lft;
  
@@ -11565,7 +11527,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		/* update lifetime (RFC2462 5.5.3 e) */
  		spin_lock_bh(&ifp->lock);
  		now = jiffies;
-@@ -2488,7 +2551,7 @@
+@@ -2488,7 +2542,7 @@
  }
  EXPORT_SYMBOL_GPL(addrconf_prefix_rcv_add_addr);
  
@@ -11574,41 +11536,36 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct prefix_info *pinfo;
  	__u32 valid_lft;
-@@ -2500,6 +2563,23 @@
+@@ -2500,6 +2554,18 @@
  
  	pinfo = (struct prefix_info *) opt;
  
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
 +
 +		printk("addrconf_prefix_rcv(pvd = %s, %s/%d, %s)\n",
-+#ifdef	CONFIG_NETPVD
 +			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
-+#else
-+			"<no pvd>",
-+#endif
 +			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
-+			dev->name
-+			);
++			dev->name);
 +	}
-+	/* ! T.DANIS */
++#endif
 +
 +
  	if (len < sizeof(struct prefix_info)) {
  		ADBG("addrconf: prefix option too short\n");
  		return;
-@@ -2570,6 +2650,9 @@
+@@ -2570,6 +2636,9 @@
  			} else {
  				rt6_clean_expires(rt);
  			}
 +#ifdef	CONFIG_NETPVD
-+			pvd_migrate_route(pvd, rt, __func__);
++			pvd_migrate_route(pvd, rt);
 +#endif
  		} else if (valid_lft) {
  			clock_t expires = 0;
  			int flags = RTF_ADDRCONF | RTF_PREFIX_RT;
-@@ -2579,7 +2662,8 @@
+@@ -2579,7 +2648,8 @@
  				expires = jiffies_to_clock_t(rt_expires);
  			}
  			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
@@ -11618,7 +11575,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		}
  		ip6_rt_put(rt);
  	}
-@@ -2621,10 +2705,13 @@
+@@ -2621,7 +2691,8 @@
  						   &addr, addr_type,
  						   addr_flags, sllao,
  						   tokenized, valid_lft,
@@ -11628,12 +11585,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		if (err)
  			goto put;
  
-+		printk("dev_addr_generated (%s)\n", dev_addr_generated ? "true" : "false");
-+
- 		/* Ignore error case here because previous prefix add addr was
- 		 * successful which will be notified.
- 		 */
-@@ -2632,9 +2719,26 @@
+@@ -2632,9 +2703,21 @@
  					      addr_type, addr_flags, sllao,
  					      tokenized, valid_lft,
  					      prefered_lft,
@@ -11643,25 +11595,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	}
  	inet6_prefix_notify(RTM_NEWPREFIX, in6_dev, pinfo);
 +
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
 +
 +		printk("inet6_prefix_notify(RTM_NEWPREFIX) called (%s/%d) [%s]\n",
 +			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
-+#ifdef	CONFIG_NETPVD
-+			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>"
-+#else
-+			"<no pvd>"
-+#endif
-+			);
++			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
 +	}
-+	/* ! T.DANIS */
++#endif
 +
  put:
  	in6_dev_put(in6_dev);
  }
-@@ -2729,7 +2833,8 @@
+@@ -2729,7 +2812,8 @@
  			  const struct in6_addr *pfx,
  			  const struct in6_addr *peer_pfx,
  			  unsigned int plen, __u32 ifa_flags,
@@ -11671,7 +11618,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct inet6_ifaddr *ifp;
  	struct inet6_dev *idev;
-@@ -2755,7 +2860,7 @@
+@@ -2755,7 +2839,7 @@
  	if (!dev)
  		return -ENODEV;
  
@@ -11680,14 +11627,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	if (IS_ERR(idev))
  		return PTR_ERR(idev);
  
-@@ -2788,12 +2893,15 @@
+@@ -2788,12 +2872,14 @@
  	}
  
  	ifp = ipv6_add_addr(idev, pfx, peer_pfx, plen, scope, ifa_flags,
 -			    valid_lft, prefered_lft);
 +			    valid_lft, prefered_lft,
-+			    pvd,
-+			    __func__);
++			    pvd);
  
  	if (!IS_ERR(ifp)) {
  		if (!(ifa_flags & IFA_F_NOPREFIXROUTE)) {
@@ -11698,7 +11644,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		}
  
  		/*
-@@ -2873,7 +2981,8 @@
+@@ -2873,7 +2959,8 @@
  	rtnl_lock();
  	err = inet6_addr_add(net, ireq.ifr6_ifindex, &ireq.ifr6_addr, NULL,
  			     ireq.ifr6_prefixlen, IFA_F_PERMANENT,
@@ -11708,7 +11654,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	rtnl_unlock();
  	return err;
  }
-@@ -2897,13 +3006,16 @@
+@@ -2897,13 +2984,15 @@
  }
  
  static void add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
@@ -11722,12 +11668,11 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  			    scope, IFA_F_PERMANENT,
 -			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME);
 +			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME,
-+			    pvd,
-+			    __func__);
++			    pvd);
  	if (!IS_ERR(ifp)) {
  		spin_lock_bh(&ifp->lock);
  		ifp->flags &= ~IFA_F_TENTATIVE;
-@@ -2939,8 +3051,8 @@
+@@ -2939,8 +3028,8 @@
  	}
  
  	if (addr.s6_addr32[3]) {
@@ -11738,7 +11683,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		return;
  	}
  
-@@ -2963,9 +3075,10 @@
+@@ -2963,9 +3052,10 @@
  					flag |= IFA_HOST;
  				}
  
@@ -11751,7 +11696,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  			}
  		}
  	}
-@@ -2989,7 +3102,7 @@
+@@ -2989,7 +3079,7 @@
  		return;
  	}
  
@@ -11760,16 +11705,16 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	/* Add routes to other interface's IPv6 addresses */
  	for_each_netdev(dev_net(dev), sp_dev) {
-@@ -3019,7 +3132,7 @@
+@@ -3019,7 +3109,7 @@
  				}
  			}
  
 -			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, false);
-+			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, sp_ifa->pvd, false, __func__);
++			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, sp_ifa->pvd, false);
  
  			/* Failure cases are ignored */
  			if (!IS_ERR(sp_rt)) {
-@@ -3032,7 +3145,8 @@
+@@ -3032,7 +3122,8 @@
  }
  
  void addrconf_add_linklocal(struct inet6_dev *idev,
@@ -11779,21 +11724,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct inet6_ifaddr *ifp;
  	u32 addr_flags = flags | IFA_F_PERMANENT;
-@@ -3044,9 +3158,11 @@
+@@ -3044,9 +3135,10 @@
  #endif
  
  	ifp = ipv6_add_addr(idev, addr, NULL, 64, IFA_LINK, addr_flags,
 -			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME);
 +			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME,
-+			    pvd,
-+			    __func__);
++			    pvd);
  	if (!IS_ERR(ifp)) {
 -		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0);
 +		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0, pvd);
  		addrconf_dad_start(ifp);
  		in6_ifa_put(ifp);
  	}
-@@ -3142,7 +3258,7 @@
+@@ -3142,7 +3234,7 @@
  	s->initialized = true;
  }
  
@@ -11802,7 +11746,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	struct in6_addr addr;
  
-@@ -3159,9 +3275,10 @@
+@@ -3159,9 +3251,10 @@
  	case IN6_ADDR_GEN_MODE_STABLE_PRIVACY:
  		if (!ipv6_generate_stable_address(&addr, 0, idev))
  			addrconf_add_linklocal(idev, &addr,
@@ -11815,7 +11759,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		break;
  	case IN6_ADDR_GEN_MODE_EUI64:
  		/* addrconf_add_linklocal also adds a prefix_route and we
-@@ -3169,9 +3286,9 @@
+@@ -3169,9 +3262,9 @@
  		 * couldn't generate one.
  		 */
  		if (ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) == 0)
@@ -11827,7 +11771,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		break;
  	case IN6_ADDR_GEN_MODE_NONE:
  	default:
-@@ -3198,7 +3315,7 @@
+@@ -3198,7 +3291,7 @@
  		return;
  	}
  
@@ -11836,7 +11780,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	if (IS_ERR(idev))
  		return;
  
-@@ -3207,7 +3324,7 @@
+@@ -3207,7 +3300,7 @@
  	    idev->addr_gen_mode == IN6_ADDR_GEN_MODE_EUI64)
  		idev->addr_gen_mode = IN6_ADDR_GEN_MODE_RANDOM;
  
@@ -11845,7 +11789,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  }
  
  #if IS_ENABLED(CONFIG_IPV6_SIT)
-@@ -3230,14 +3347,14 @@
+@@ -3230,14 +3323,14 @@
  	}
  
  	if (dev->priv_flags & IFF_ISATAP) {
@@ -11862,7 +11806,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  }
  #endif
  
-@@ -3254,9 +3371,9 @@
+@@ -3254,9 +3347,9 @@
  		return;
  	}
  
@@ -11874,16 +11818,16 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  }
  #endif
  
-@@ -3266,7 +3383,7 @@
+@@ -3266,7 +3359,7 @@
  	if (!ifp->rt) {
  		struct rt6_info *rt;
  
 -		rt = addrconf_dst_alloc(idev, &ifp->addr, false);
-+		rt = addrconf_dst_alloc(idev, &ifp->addr, ifp->pvd, false, __func__);
++		rt = addrconf_dst_alloc(idev, &ifp->addr, ifp->pvd, false);
  		if (unlikely(IS_ERR(rt)))
  			return PTR_ERR(rt);
  
-@@ -3275,7 +3392,8 @@
+@@ -3275,7 +3368,8 @@
  
  	if (!(ifp->flags & IFA_F_NOPREFIXROUTE)) {
  		addrconf_prefix_route(&ifp->addr, ifp->prefix_len,
@@ -11893,7 +11837,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	}
  
  	addrconf_dad_start(ifp);
-@@ -4131,13 +4249,24 @@
+@@ -4131,13 +4225,24 @@
  static int if6_seq_show(struct seq_file *seq, void *v)
  {
  	struct inet6_ifaddr *ifp = (struct inet6_ifaddr *)v;
@@ -11920,7 +11864,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	return 0;
  }
  
-@@ -4399,7 +4528,8 @@
+@@ -4399,7 +4504,8 @@
  }
  
  static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
@@ -11930,7 +11874,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  {
  	u32 flags;
  	clock_t expires;
-@@ -4446,13 +4576,17 @@
+@@ -4446,13 +4552,17 @@
  	ifp->valid_lft = valid_lft;
  	ifp->prefered_lft = prefered_lft;
  
@@ -11949,7 +11893,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	} else if (had_prefixroute) {
  		enum cleanup_prefix_rt_t action;
  		unsigned long rt_expires;
-@@ -4491,6 +4625,7 @@
+@@ -4491,6 +4601,7 @@
  	u32 valid_lft = INFINITY_LIFE_TIME, preferred_lft = INFINITY_LIFE_TIME;
  	u32 ifa_flags;
  	int err;
@@ -11957,14 +11901,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFA_MAX, ifa_ipv6_policy);
  	if (err < 0)
-@@ -4512,6 +4647,24 @@
+@@ -4512,6 +4623,22 @@
  		valid_lft = INFINITY_LIFE_TIME;
  	}
  
 +#ifdef	CONFIG_NETPVD
 +	if (tb[IFA_PVD]) {
-+		printk("IFA_PVD : len = %d\n", nla_len(tb[IFA_PVD]));
-+
 +		if (nla_len(tb[IFA_PVD]) > PVDNAMSIZ) {
 +			return -EINVAL;
 +		}
@@ -11982,7 +11924,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  	dev =  __dev_get_by_index(net, ifm->ifa_index);
  	if (!dev)
  		return -ENODEV;
-@@ -4530,14 +4683,15 @@
+@@ -4530,14 +4657,15 @@
  		 */
  		return inet6_addr_add(net, ifm->ifa_index, pfx, peer_pfx,
  				      ifm->ifa_prefixlen, ifa_flags,
@@ -12000,7 +11942,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  
  	in6_ifa_put(ifa);
  
-@@ -4640,6 +4794,21 @@
+@@ -4640,6 +4768,17 @@
  	if (nla_put_u32(skb, IFA_FLAGS, ifa->flags) < 0)
  		goto error;
  
@@ -12010,19 +11952,15 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
 +		char *pvdname = pvd->name;
 +
 +		if (! pvd->implicit_flag) {
-+			printk("Addr associated to pvd %s\n", pvdname);
-+
 +			if (nla_put(skb, IFA_PVD, strlen(pvdname) + 1, pvdname))
 +				goto error;
-+
-+			printk("IFA_PVD pushed on skb\n");
 +		}
 +	}
 +#endif
  	nlmsg_end(skb, nlh);
  	return 0;
  
-@@ -5458,7 +5627,8 @@
+@@ -5458,7 +5597,8 @@
  			addrconf_join_anycast(ifp);
  		if (!ipv6_addr_any(&ifp->peer_addr))
  			addrconf_prefix_route(&ifp->peer_addr, 128,
@@ -12032,7 +11970,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		break;
  	case RTM_DELADDR:
  		if (ifp->idev->cnf.forwarding)
-@@ -5468,7 +5638,8 @@
+@@ -5468,7 +5608,8 @@
  			struct rt6_info *rt;
  
  			rt = addrconf_get_prefix_route(&ifp->peer_addr, 128,
@@ -12044,20 +11982,20 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/addrconf.c linux-4.10.7
  		}
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/anycast.c linux-4.10.7/net/ipv6/anycast.c
 --- linux-4.10.7-orig/net/ipv6/anycast.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/anycast.c	2017-06-08 17:16:32.509925814 +0200
++++ linux-4.10.7/net/ipv6/anycast.c	2017-10-02 17:46:48.045955410 +0200
 @@ -262,7 +262,7 @@
  		}
  	}
  
 -	rt = addrconf_dst_alloc(idev, addr, true);
-+	rt = addrconf_dst_alloc(idev, addr, NULL, true, __func__);	/* FIXME : pvd == NULL for now */
++	rt = addrconf_dst_alloc(idev, addr, NULL, true);	/* FIXME : pvd == NULL for now */
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		goto out;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/datagram.c linux-4.10.7/net/ipv6/datagram.c
 --- linux-4.10.7-orig/net/ipv6/datagram.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/datagram.c	2017-09-25 17:13:36.722457797 +0200
-@@ -83,6 +83,20 @@
++++ linux-4.10.7/net/ipv6/datagram.c	2017-10-02 17:17:20.932543608 +0200
+@@ -83,6 +83,18 @@
  	}
  	ip6_datagram_flow_key_init(&fl6, sk);
  
@@ -12071,14 +12009,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/datagram.c linux-4.10.7
 +	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
 +		goto out;
 +	}
-+	printk("ip6_datagram_dst_update : pvd %s selected\n",
-+			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>");
 +#endif
 +
  	rcu_read_lock();
  	opt = flowlabel ? flowlabel->opt : rcu_dereference(np->opt);
  	final_p = fl6_update_dst(&fl6, opt, &final);
-@@ -117,6 +131,11 @@
+@@ -117,6 +129,11 @@
  
  out:
  	fl6_sock_release(flowlabel);
@@ -12090,52 +12026,10 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/datagram.c linux-4.10.7
  	return err;
  }
  
-@@ -151,6 +170,10 @@
- 	int			err;
- 	__be32			fl6_flowlabel = 0;
- 
-+#ifdef	CONFIG_NETPVD
-+	printk("__ip6_datagram_connect called\n");
-+#endif
-+
- 	if (usin->sin6_family == AF_INET) {
- 		if (__ipv6_only_sock(sk))
- 			return -EAFNOSUPPORT;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/fib6_rules.c linux-4.10.7/net/ipv6/fib6_rules.c
 --- linux-4.10.7-orig/net/ipv6/fib6_rules.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/fib6_rules.c	2017-09-13 23:51:58.515119354 +0200
-@@ -13,10 +13,13 @@
-  *	Ville Nuorvala		<vnuorval@tcs.hut.fi>
-  */
- 
-+#include <linux/kernel.h>	// T.DANIS : for dump_stack()
-+
- #include <linux/netdevice.h>
- #include <linux/export.h>
- 
- #include <net/fib_rules.h>
-+#include <linux/inet.h>		// T.DANIS : for addr6tostr()
- #include <net/ipv6.h>
- #include <net/addrconf.h>
- #include <net/ip6_route.h>
-@@ -46,6 +49,16 @@
- 
- 	rt = arg.result;
- 
-+#ifdef	CONFIG_NETPVD
-+	if (fl6->pvd != NULL) {
-+		char sAddr[128];
-+
-+		printk("fib6_rule_lookup : rt gw = %s\n",
-+			rt ? addr6tostr(rt->rt6i_gateway.s6_addr, sAddr) : "<no route>");
-+		/* dump_stack(); */
-+	}
-+#endif
-+
- 	if (!rt) {
- 		dst_hold(&net->ipv6.ip6_null_entry->dst);
- 		return &net->ipv6.ip6_null_entry->dst;
-@@ -113,6 +126,11 @@
++++ linux-4.10.7/net/ipv6/fib6_rules.c	2017-10-02 16:46:41.676524186 +0200
+@@ -113,6 +113,11 @@
  					       ip6_dst_idev(&rt->dst)->dev,
  					       &flp6->daddr,
  					       rt6_flags2srcprefs(flags),
@@ -12147,23 +12041,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/fib6_rules.c linux-4.10
  					       &saddr))
  				goto again;
  			if (!ipv6_prefix_equal(&saddr, &r->src.addr,
-@@ -168,6 +186,13 @@
- 	struct fib6_rule *r = (struct fib6_rule *) rule;
- 	struct flowi6 *fl6 = &fl->u.ip6;
- 
-+#ifdef	CONFIG_NETPVD
-+	if (fl6->pvd != NULL) {
-+		printk("fib6_rule_match called (pvd in fl6 : %p)\n", fl6->pvd);
-+		/* dump_stack(); */
-+	}
-+#endif
-+
- 	if (r->dst.plen &&
- 	    !ipv6_prefix_equal(&fl6->daddr, &r->dst.addr, r->dst.plen))
- 		return 0;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_fib.c linux-4.10.7/net/ipv6/ip6_fib.c
 --- linux-4.10.7-orig/net/ipv6/ip6_fib.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/ip6_fib.c	2017-09-13 22:00:30.779576376 +0200
++++ linux-4.10.7/net/ipv6/ip6_fib.c	2017-10-02 17:16:06.680758778 +0200
 @@ -24,6 +24,7 @@
  #include <linux/net.h>
  #include <linux/route.h>
@@ -12183,23 +12063,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_fib.c linux-4.10.7/
  #define RT6_DEBUG 2
  
  #if RT6_DEBUG >= 3
-@@ -473,6 +478,15 @@
- 
- 	RT6_TRACE("fib6_add_1\n");
- 
-+#ifdef	CONFIG_NETPVD
-+	{
-+		char sAddr[128];
-+
-+		printk("fib6_add_1 called : addr = %s\n",
-+			addr6tostr(addr->s6_addr, sAddr));
-+	}
-+#endif
-+
- 	/* insert node in tree */
- 
- 	fn = root;
-@@ -1960,10 +1974,21 @@
+@@ -1960,10 +1965,21 @@
  	else
  		seq_puts(seq, "00000000000000000000000000000000");
  
@@ -12225,7 +12089,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_fib.c linux-4.10.7/
  }
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_output.c linux-4.10.7/net/ipv6/ip6_output.c
 --- linux-4.10.7-orig/net/ipv6/ip6_output.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/ip6_output.c	2017-09-13 12:33:31.125560211 +0200
++++ linux-4.10.7/net/ipv6/ip6_output.c	2017-10-02 16:45:55.741283767 +0200
 @@ -33,6 +33,7 @@
  #include <linux/net.h>
  #include <linux/netdevice.h>
@@ -12234,38 +12098,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_output.c linux-4.10
  #include <linux/in6.h>
  #include <linux/tcp.h>
  #include <linux/route.h>
-@@ -238,6 +239,30 @@
- 	hdr->saddr = fl6->saddr;
- 	hdr->daddr = *first_hop;
- 
-+#ifdef	CONFIG_NETPVD
-+	/*
-+	 * T.DANIS
-+	 */
-+	{
-+		static int lN = 0, lNN = 0;
-+		char sAddr[64];
-+
-+		if (++lN > 1024) {
-+			lN = 0;
-+			printk("ip6_xmit : saddr = %s\n", addr6tostr(hdr->saddr.s6_addr, sAddr));
-+			printk("ip6_xmit : daddr = %s\n", addr6tostr(hdr->daddr.s6_addr, sAddr));
-+			printk("\n");
-+			if (lNN == 0) {
-+				dump_stack();
-+				lNN = 1;
-+			}
-+		}
-+	}
-+	/*
-+	 * ! T.DANIS
-+	 */
-+#endif
-+
- 	skb->protocol = htons(ETH_P_IPV6);
- 	skb->priority = sk->sk_priority;
- 	skb->mark = mark;
-@@ -959,6 +984,11 @@
+@@ -959,6 +960,11 @@
  		rt = (*dst)->error ? NULL : (struct rt6_info *)*dst;
  		err = ip6_route_get_saddr(net, rt, &fl6->daddr,
  					  sk ? inet6_sk(sk)->srcprefs : 0,
@@ -12277,15 +12110,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_output.c linux-4.10
  					  &fl6->saddr);
  		if (err)
  			goto out_err_release;
-@@ -1078,6 +1108,8 @@
- 	struct dst_entry *dst = NULL;
- 	int err;
- 
-+	printk("ip6_dst_lookup_flow called\n");
-+
- 	err = ip6_dst_lookup_tail(sock_net(sk), sk, &dst, fl6);
- 	if (err)
- 		return ERR_PTR(err);
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_tunnel.c linux-4.10.7/net/ipv6/ip6_tunnel.c
 --- linux-4.10.7-orig/net/ipv6/ip6_tunnel.c	2017-03-30 09:44:36.000000000 +0200
 +++ linux-4.10.7/net/ipv6/ip6_tunnel.c	2017-09-11 11:52:09.571285598 +0200
@@ -12300,7 +12124,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ip6_tunnel.c linux-4.10
  	}
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/net/ipv6/ndisc.c
 --- linux-4.10.7-orig/net/ipv6/ndisc.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/ndisc.c	2017-10-01 18:26:20.937712007 +0200
++++ linux-4.10.7/net/ipv6/ndisc.c	2017-10-02 17:43:33.571084263 +0200
 @@ -36,6 +36,7 @@
  #include <linux/sockios.h>
  #include <linux/sched.h>
@@ -12330,7 +12154,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  #include <net/netlink.h>
  #include <linux/rtnetlink.h>
  
-@@ -211,6 +219,50 @@
+@@ -211,6 +219,46 @@
  	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
  }
  
@@ -12342,8 +12166,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	int l = nd_opt->nd_opt_len << 3;
 +	int pvdname_len = l - sizeof(struct nd_opt_pvdid);
 +	struct nd_opt_pvdid *pvd = (struct nd_opt_pvdid *) nd_opt;
-+
-+	printk("pvdid_parse_opt called\n");
 +
 +	if (l < sizeof(struct nd_opt_pvdid)) {
 +		printk("Invalid nd_opt_pvdid size (%d, expected at least %d)\n",
@@ -12372,8 +12194,6 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	ndopts->pvd_l_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 14) & 0x01;
 +	ndopts->pvd_sequence_number = ntohs(pvd->nd_opt_pvdid_sequence_number);
 +
-+	printk("Correct nd_opt_pvdid option (%s)\n", ndopts->pvdname);
-+
 +	return 0;
 +}
 +#endif
@@ -12381,13 +12201,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  					  u8 *opt, int opt_len,
  					  struct ndisc_options *ndopts)
-@@ -255,6 +307,18 @@
+@@ -255,6 +303,17 @@
  				ndopts->nd_opts_ri = nd_opt;
  			break;
  #endif
 +#ifdef	CONFIG_NETPVD
 +		case ND_OPT_PVDID:
-+			printk("ND_OPT_PVDID option found in RA\n");
 +			if (ndopts->nd_opt_pvdid) {
 +				ND_PRINTK(2, warn,
 +					"%s: duplicated PVD option found. Ignored\n",
@@ -12400,7 +12219,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		default:
  			if (ndisc_is_useropt(dev, nd_opt)) {
  				ndopts->nd_useropts_end = nd_opt;
-@@ -513,6 +577,7 @@
+@@ -513,6 +572,7 @@
  	} else {
  		if (ipv6_dev_get_saddr(dev_net(dev), dev, daddr,
  				       inet6_sk(dev_net(dev)->ipv6.ndisc_sk)->srcprefs,
@@ -12408,11 +12227,10 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  				       &tmpaddr))
  			return;
  		src_addr = &tmpaddr;
-@@ -1149,9 +1214,17 @@
+@@ -1149,6 +1209,11 @@
  	unsigned int pref = 0;
  	__u32 old_if_flags;
  	bool send_ifinfo_notify = false;
-+	int ra_len = skb_tail_pointer(skb) - skb_transport_header(skb);
 +#ifdef	CONFIG_NETPVD
 +	struct net_pvd *pvd = NULL;
 +#else
@@ -12421,12 +12239,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  
  	__u8 *opt = (__u8 *)(ra_msg + 1);
  
-+	printk("ndisc_router_discovery : ra_len = %d\n", ra_len);
-+
- 	optlen = (skb_tail_pointer(skb) - skb_transport_header(skb)) -
- 		sizeof(struct ra_msg);
- 
-@@ -1190,6 +1263,55 @@
+@@ -1190,6 +1255,55 @@
  		return;
  	}
  
@@ -12442,9 +12255,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	 * + the incoming device (skb->dev)
 +	 * + and of course the pvd name
 +	 */
-+	printk("Checking nd_opt_pvdid options\n");
 +	if (ndopts.nd_opt_pvdid) {
-+		printk("Some nd_opt_pvdid options\n");
 +		if ((pvd = register_pvd(
 +				dev_net(skb->dev),
 +				ndopts.pvdname,
@@ -12467,7 +12278,9 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +		pvd->sequence_number = ndopts.pvd_sequence_number;
 +	}
 +	else {
-+		printk("No nd_opt_pvdid options. Creating implicit pvd\n");
++		/*
++		 * No nd_opt_pvdid options. Creating implicit pvd
++		 */
 +		if ((pvd = register_pvd(
 +				dev_net(skb->dev),
 +					NULL,
@@ -12482,16 +12295,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  	if (!ipv6_accept_ra(in6_dev)) {
  		ND_PRINTK(2, info,
  			  "RA: %s, did not accept ra for dev: %s\n",
-@@ -1261,6 +1383,8 @@
- 
- 	rt = rt6_get_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev);
- 
-+	printk("ndisc_router_discovery : rt6_get_dflt_router => rt = %p\n", rt);
-+
- 	if (rt) {
- 		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
- 		if (!neigh) {
-@@ -1268,7 +1392,7 @@
+@@ -1268,7 +1382,7 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12500,12 +12304,10 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  	if (rt && lifetime == 0) {
-@@ -1282,11 +1406,14 @@
+@@ -1282,11 +1396,12 @@
  		ND_PRINTK(3, info, "RA: adding default router\n");
  
  		rt = rt6_add_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev, pref);
-+
-+		printk("ndisc_router_discovery : rt6_add_dflt_router => rt = %p\n", rt);
 +
  		if (!rt) {
  			ND_PRINTK(0, err,
@@ -12516,7 +12318,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1295,13 +1422,21 @@
+@@ -1295,13 +1410,21 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12533,27 +12335,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
 +	 * Make sure this default route is linked to the pvd
 +	 */
 +	if (rt)
-+		pvd_migrate_route(pvd, rt, __func__);
++		pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1410,6 +1545,13 @@
- 		     p;
- 		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
- 			struct route_info *ri = (struct route_info *)p;
-+#ifdef	CONFIG_NETPVD
-+			if (ri->length == 3) {
-+				char sAddr[64];
-+				printk("route_info : %s\n",
-+					addr6tostr(((struct in6_addr *) ri->prefix)->s6_addr, sAddr));
-+			}
-+#endif
- #ifdef CONFIG_IPV6_NDISC_NODETYPE
- 			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
- 			    ri->prefix_len == 0)
-@@ -1421,7 +1563,8 @@
+@@ -1421,7 +1544,8 @@
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -12563,7 +12351,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
-@@ -1445,7 +1588,8 @@
+@@ -1445,7 +1569,8 @@
  		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
@@ -12573,7 +12361,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/ndisc.c linux-4.10.7/ne
  		}
  	}
  
-@@ -1481,10 +1625,54 @@
+@@ -1481,10 +1606,54 @@
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
@@ -12643,7 +12431,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/netfilter/nf_nat_masque
  	nfct_nat(ct)->masq_index = out->ifindex;
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/net/ipv6/route.c
 --- linux-4.10.7-orig/net/ipv6/route.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/route.c	2017-10-02 11:17:29.836494203 +0200
++++ linux-4.10.7/net/ipv6/route.c	2017-10-02 17:40:41.582851335 +0200
 @@ -36,6 +36,7 @@
  #include <linux/net.h>
  #include <linux/route.h>
@@ -12658,7 +12446,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	dst->from = NULL;
 +
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(NULL, rt, __func__);
++	pvd_migrate_route(NULL, rt);
 +#endif
  	dst_release(from);
  }
@@ -12775,56 +12563,49 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  {
  	struct net *net = dev_net(dev);
  	struct route_info *rinfo = (struct route_info *) opt;
-@@ -767,6 +807,16 @@
+@@ -767,6 +807,11 @@
  	unsigned long lifetime;
  	struct rt6_info *rt;
  
-+	/* T.DANIS */
-+	printk("rt6_route_rcv called (pvd %s)\n",
 +#ifdef CONFIG_NETPVD
-+		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>"
-+#else
-+		"<no pvd>"
++	printk("rt6_route_rcv called (pvd %s)\n",
++		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
 +#endif
-+	      );
-+	/* ! T.DANIS */
 +
  	if (len < sizeof(struct route_info)) {
  		return -EINVAL;
  	}
-@@ -802,6 +852,14 @@
+@@ -802,6 +847,14 @@
  		prefix = &prefix_buf;
  	}
  
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
 +		printk("rt6_route_rcv : route = %s\n",
 +			prefix ? addr6tostr(prefix->s6_addr, sAddr) : "<no prefix>");
 +	}
-+	/* ! T.DANIS */
++#endif
 +
  	if (rinfo->prefix_len == 0)
  		rt = rt6_get_dflt_router(gwaddr, dev);
  	else
-@@ -820,6 +878,10 @@
+@@ -820,6 +873,10 @@
  		rt->rt6i_flags = RTF_ROUTEINFO |
  				 (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(pvd, rt, __func__);
++	pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt) {
  		if (!addrconf_finite_timeout(lifetime))
  			rt6_clean_expires(rt);
-@@ -855,12 +917,18 @@
+@@ -855,12 +912,16 @@
  {
  	struct fib6_node *fn;
  	struct rt6_info *rt;
 +	void *pvd = NULL;
-+
-+	printk("ip6_pol_route_lookup called\n");
  
  	read_lock_bh(&table->tb6_lock);
  	fn = fib6_lookup(&table->tb6_root, &fl6->daddr, &fl6->saddr);
@@ -12838,25 +12619,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
  		rt = rt6_multipath_select(rt, fl6, fl6->flowi6_oif, flags);
  	if (rt == net->ipv6.ip6_null_entry) {
-@@ -880,6 +948,8 @@
- struct dst_entry *ip6_route_lookup(struct net *net, struct flowi6 *fl6,
- 				    int flags)
- {
-+	printk("ip6_route_lookup called\n");
-+
- 	return fib6_rule_lookup(net, fl6, flags, ip6_pol_route_lookup);
- }
- EXPORT_SYMBOL_GPL(ip6_route_lookup);
-@@ -894,6 +964,8 @@
- 	struct dst_entry *dst;
- 	int flags = strict ? RT6_LOOKUP_F_IFACE : 0;
- 
-+	printk("rt6_lookup called\n");
-+
- 	if (saddr) {
- 		memcpy(&fl6.saddr, saddr, sizeof(*saddr));
- 		flags |= RT6_LOOKUP_F_HAS_SADDR;
-@@ -1051,6 +1123,7 @@
+@@ -1051,6 +1112,7 @@
  	struct fib6_node *fn, *saved_fn;
  	struct rt6_info *rt;
  	int strict = 0;
@@ -12864,7 +12627,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  
  	strict |= flags & RT6_LOOKUP_F_IFACE;
  	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
-@@ -1065,10 +1138,19 @@
+@@ -1065,8 +1127,11 @@
  	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
  		oif = 0;
  
@@ -12876,29 +12639,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
 +	rt = rt6_select(fn, oif, pvd, strict);
  	if (rt->rt6i_nsiblings)
  		rt = rt6_multipath_select(rt, fl6, oif, strict);
-+#ifdef	CONFIG_NETPVD
-+	if (fl6->pvd != NULL) {
-+		printk("ip6_pol_route : rt = %p, rt->pvd = %p, fl6->pvd = %p\n",
-+			rt, rt->rt6i_pvd, fl6->pvd);
-+	}
-+#endif
  	if (rt == net->ipv6.ip6_null_entry) {
- 		fn = fib6_backtrack(fn, &fl6->saddr);
- 		if (fn)
-@@ -1187,6 +1269,12 @@
- static struct rt6_info *ip6_pol_route_output(struct net *net, struct fib6_table *table,
- 					     struct flowi6 *fl6, int flags)
- {
-+#ifdef	CONFIG_NETPVD
-+	if (fl6->pvd) {
-+		printk("ip6_pol_route_output  called\n");
-+	}
-+#endif
-+
- 	return ip6_pol_route(net, table, fl6->flowi6_oif, fl6, flags);
- }
- 
-@@ -1210,6 +1298,12 @@
+@@ -1210,6 +1275,12 @@
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
@@ -12911,21 +12653,12 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -1821,7 +1915,7 @@
- 	return rt;
- }
- 
--static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg)
-+static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg, const char *caller)
- {
- 	struct net *net = cfg->fc_nlinfo.nl_net;
- 	struct rt6_info *rt = NULL;
-@@ -2072,25 +2166,34 @@
+@@ -2072,12 +2143,21 @@
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(cfg->fc_pvd, rt, caller);
++	pvd_migrate_route(cfg->fc_pvd, rt);
 +#endif
 +
  	return rt;
@@ -12936,28 +12669,13 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  		in6_dev_put(idev);
 +
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(NULL, rt, caller);	/* deassociate rt and its pvd */
++	pvd_migrate_route(NULL, rt);	/* deassociate rt and its pvd */
 +#endif
 +
  	if (rt)
  		dst_free(&rt->dst);
  
- 	return ERR_PTR(err);
- }
- 
--int ip6_route_add(struct fib6_config *cfg)
-+int ip6_route_add(struct fib6_config *cfg, const char *caller)
- {
- 	struct mx6_config mxc = { .mx = NULL, };
- 	struct rt6_info *rt;
- 	int err;
- 
--	rt = ip6_route_info_create(cfg);
-+	rt = ip6_route_info_create(cfg, caller);
- 	if (IS_ERR(rt)) {
- 		err = PTR_ERR(rt);
- 		rt = NULL;
-@@ -2395,18 +2498,23 @@
+@@ -2395,6 +2475,9 @@
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -12967,12 +12685,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  
  	/* We should treat it as a default route if prefix length is 0. */
  	if (!prefixlen)
- 		cfg.fc_flags |= RTF_DEFAULT;
- 
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
- 
- 	return rt6_get_route_info(net, prefix, prefixlen, gwaddr, dev);
+@@ -2406,7 +2489,9 @@
  }
  #endif
  
@@ -12983,7 +12696,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  {
  	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
  	struct rt6_info *rt;
-@@ -2426,6 +2534,7 @@
+@@ -2426,6 +2511,7 @@
  	if (rt)
  		dst_hold(&rt->dst);
  	read_unlock_bh(&table->tb6_lock);
@@ -12991,7 +12704,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	return rt;
  }
  
-@@ -2445,8 +2554,11 @@
+@@ -2445,6 +2531,9 @@
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -12999,49 +12712,32 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
 +	cfg.fc_pvd = NULL;
 +#endif
  
--	if (!ip6_route_add(&cfg)) {
-+	if (!ip6_route_add(&cfg, __func__)) {
+ 	if (!ip6_route_add(&cfg)) {
  		struct fib6_table *table;
- 
- 		table = fib6_get_table(dev_net(dev), cfg.fc_table);
-@@ -2539,7 +2651,7 @@
- 		rtnl_lock();
- 		switch (cmd) {
- 		case SIOCADDRT:
--			err = ip6_route_add(&cfg);
-+			err = ip6_route_add(&cfg, __func__);
- 			break;
- 		case SIOCDELRT:
- 			err = ip6_route_del(&cfg);
-@@ -2610,7 +2722,9 @@
+@@ -2610,6 +2699,7 @@
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
--				    bool anycast)
 +				    void *pvd,
-+				    bool anycast,
-+				    const char *caller)
+ 				    bool anycast)
  {
  	u32 tb_id;
- 	struct net *net = dev_net(idev->dev);
-@@ -2633,6 +2747,9 @@
+@@ -2633,6 +2723,9 @@
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(pvd, rt, caller);
++	pvd_migrate_route(pvd, rt);
 +#endif
  
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
  	if (anycast)
-@@ -2922,6 +3039,28 @@
+@@ -2922,6 +3015,26 @@
  			goto errout;
  	}
  
 +#ifdef	CONFIG_NETPVD
 +	if (tb[RTA_PVD]) {
-+		printk("RTA_PVD : len = %d\n", nla_len(tb[RTA_PVD]));
-+
 +		if (nla_len(tb[RTA_PVD]) > PVDNAMSIZ) {
 +			err = -EINVAL;
 +			goto errout;
@@ -13063,25 +12759,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -3028,7 +3167,7 @@
- 				r_cfg.fc_encap_type = nla_get_u16(nla);
- 		}
- 
--		rt = ip6_route_info_create(&r_cfg);
-+		rt = ip6_route_info_create(&r_cfg, __func__);
- 		if (IS_ERR(rt)) {
- 			err = PTR_ERR(rt);
- 			rt = NULL;
-@@ -3154,7 +3293,7 @@
- 	if (cfg.fc_mp)
- 		return ip6_route_multipath_add(&cfg);
- 	else
--		return ip6_route_add(&cfg);
-+		return ip6_route_add(&cfg, __func__);
- }
- 
- static inline size_t rt6_nlmsg_size(struct rt6_info *rt)
-@@ -3290,7 +3429,7 @@
+@@ -3290,7 +3403,7 @@
  				goto nla_put_failure;
  	} else if (dst) {
  		struct in6_addr saddr_buf;
@@ -13090,7 +12768,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
  		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
  			goto nla_put_failure;
  	}
-@@ -3330,6 +3469,22 @@
+@@ -3330,6 +3443,18 @@
  	if (lwtunnel_fill_encap(skb, rt->dst.lwtstate) < 0)
  		goto nla_put_failure;
  
@@ -13100,12 +12778,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/route.c linux-4.10.7/ne
 +		char *pvdname = pvd->name;
 +
 +		if (! pvd->implicit_flag) {
-+			printk("Route associated to pvd %s\n", pvdname);
-+
 +			if (nla_put(skb, RTA_PVD, strlen(pvdname) + 1, pvdname))
 +				goto nla_put_failure;
-+
-+			printk("RTA_PVD pushed on skb\n");
 +		}
 +	}
 +#endif
@@ -13126,7 +12800,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/seg6_iptunnel.c linux-4
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7/net/ipv6/tcp_ipv6.c
 --- linux-4.10.7-orig/net/ipv6/tcp_ipv6.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/tcp_ipv6.c	2017-09-25 17:58:29.837682405 +0200
++++ linux-4.10.7/net/ipv6/tcp_ipv6.c	2017-10-02 17:23:10.484920357 +0200
 @@ -31,6 +31,7 @@
  #include <linux/sockios.h>
  #include <linux/net.h>
@@ -13135,7 +12809,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
  #include <linux/in.h>
  #include <linux/in6.h>
  #include <linux/netdevice.h>
-@@ -239,10 +240,41 @@
+@@ -239,6 +240,17 @@
  	fl6.fl6_dport = usin->sin6_port;
  	fl6.fl6_sport = inet->inet_sport;
  	fl6.flowi6_uid = sk->sk_uid;
@@ -13149,53 +12823,11 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
 +	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
 +		goto failure;
 +	}
-+	printk("tcp_v6_connect : pvd %s selected\n",
-+			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>");
-+#endif
-+
-+#ifdef	CONFIG_NETPVD
-+	{
-+		char sAddr[64];
-+
-+		printk("tcp_v6_connect : #1 : fl6.saddr = %s\n",
-+			addr6tostr(fl6.saddr.s6_addr, sAddr));
-+	}
 +#endif
  
  	opt = rcu_dereference_protected(np->opt, lockdep_sock_is_held(sk));
  	final_p = fl6_update_dst(&fl6, opt, &final);
- 
-+#ifdef	CONFIG_NETPVD
-+	{
-+		char sAddr[64];
-+
-+		printk("tcp_v6_connect : #2 : fl6.saddr = %s\n",
-+			addr6tostr(fl6.saddr.s6_addr, sAddr));
-+	}
-+#endif
-+
- 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
- 
- 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
-@@ -260,6 +292,17 @@
- 	np->saddr = *saddr;
- 	inet->inet_rcv_saddr = LOOPBACK4_IPV6;
- 
-+#ifdef	CONFIG_NETPVD
-+	{
-+		char sAddr[64];
-+
-+		printk("tcp_v6_connect : #3 : np->saddr = %s\n",
-+			addr6tostr(np->saddr.s6_addr, sAddr));
-+		printk("tcp_v6_connect : #3 : fl6.saddr = %s\n",
-+			addr6tostr(fl6.saddr.s6_addr, sAddr));
-+	}
-+#endif
-+
- 	sk->sk_gso_type = SKB_GSO_TCPV6;
- 	ip6_dst_store(sk, dst, NULL, NULL);
- 
-@@ -295,6 +338,10 @@
+@@ -295,6 +307,10 @@
  	if (err)
  		goto late_failure;
  
@@ -13206,7 +12838,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
  	return 0;
  
  late_failure:
-@@ -303,6 +350,11 @@
+@@ -303,6 +319,11 @@
  failure:
  	inet->inet_dport = 0;
  	sk->sk_route_caps = 0;
@@ -13220,7 +12852,7 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/tcp_ipv6.c linux-4.10.7
  
 diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/udp.c linux-4.10.7/net/ipv6/udp.c
 --- linux-4.10.7-orig/net/ipv6/udp.c	2017-03-30 09:44:36.000000000 +0200
-+++ linux-4.10.7/net/ipv6/udp.c	2017-09-27 09:53:05.385222971 +0200
++++ linux-4.10.7/net/ipv6/udp.c	2017-10-02 17:16:28.562400669 +0200
 @@ -1019,6 +1019,10 @@
  	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
  	struct sockcm_cookie sockc;
@@ -13246,8 +12878,8 @@ diff -Naur -X DiffNaurExclude linux-4.10.7-orig/net/ipv6/udp.c linux-4.10.7/net/
 +	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
 +		return err;
 +	}
-+	printk("udpv6_sendmsg : pvd %s selected\n",
-+			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>");
++	/* printk("udpv6_sendmsg : pvd %s selected\n",
++			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>"); */
 +#endif
 +
  	if (msg->msg_controllen) {
