@@ -1,4 +1,16 @@
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/drivers/net/Kconfig ubuntu-4.10.0/drivers/net/Kconfig
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/drivers/infiniband/core/addr.c ubuntu-4.10.0/drivers/infiniband/core/addr.c
+--- ubuntu-4.10.0-orig/drivers/infiniband/core/addr.c	2017-07-18 14:06:20.491543032 +0100
++++ ubuntu-4.10.0/drivers/infiniband/core/addr.c	2017-10-08 17:30:51.225293689 +0100
+@@ -451,7 +451,7 @@
+ 	rt = (struct rt6_info *)dst;
+ 	if (ipv6_addr_any(&fl6.saddr)) {
+ 		ret = ipv6_dev_get_saddr(addr->net, ip6_dst_idev(dst)->dev,
+-					 &fl6.daddr, 0, &fl6.saddr);
++					 &fl6.daddr, 0, /* pvd */ NULL, &fl6.saddr);
+ 		if (ret)
+ 			goto put;
+ 
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/drivers/net/Kconfig ubuntu-4.10.0/drivers/net/Kconfig
 --- ubuntu-4.10.0-orig/drivers/net/Kconfig	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/drivers/net/Kconfig	2017-07-18 14:25:07.395522852 +0100
 @@ -1,4 +1,21 @@
@@ -23,24 +35,40 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/drivers/net/Kconfig ubuntu-4.10
  # Network device configuration
  #
  
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/linux/sched.h ubuntu-4.10.0/include/linux/sched.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/linux/inet.h ubuntu-4.10.0/include/linux/inet.h
+--- ubuntu-4.10.0-orig/include/linux/inet.h	2017-07-18 14:06:22.179543002 +0100
++++ ubuntu-4.10.0/include/linux/inet.h	2017-10-08 16:54:08.685283044 +0100
+@@ -54,4 +54,5 @@
+ extern __be32 in_aton(const char *str);
+ extern int in4_pton(const char *src, int srclen, u8 *dst, int delim, const char **end);
+ extern int in6_pton(const char *src, int srclen, u8 *dst, int delim, const char **end);
++extern char *addr6tostr(u8 const *addr, char *str);
+ #endif	/* _LINUX_INET_H */
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/linux/sched.h ubuntu-4.10.0/include/linux/sched.h
 --- ubuntu-4.10.0-orig/include/linux/sched.h	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/include/linux/sched.h	2017-07-18 14:25:07.395522852 +0100
-@@ -2002,6 +2002,10 @@
++++ ubuntu-4.10.0/include/linux/sched.h	2017-10-08 16:54:39.861283195 +0100
+@@ -2002,6 +2002,9 @@
  	/* A live task holds one reference. */
  	atomic_t stack_refcount;
  #endif
-+#ifdef	CONFIG_NET_PVD
-+	int			sk_n_bound_pvd;		/* -1 : undefined, #-1 : forcibly set */
-+	int			sk_bound_pvds[32];	/* FIXME : use MAXBOUNDPVD instead */
++#ifdef	CONFIG_NETPVD
++	char	*bound_pvd;	/* 0 : inherit; -1 : unset, otherwise : set */
 +#endif
  /* CPU-specific state of this task */
  	struct thread_struct thread;
  /*
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/addrconf.h ubuntu-4.10.0/include/net/addrconf.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/addrconf.h ubuntu-4.10.0/include/net/addrconf.h
 --- ubuntu-4.10.0-orig/include/net/addrconf.h	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/include/net/addrconf.h	2017-07-18 14:25:07.399522852 +0100
-@@ -98,14 +98,16 @@
++++ ubuntu-4.10.0/include/net/addrconf.h	2017-10-08 16:55:09.649283339 +0100
+@@ -85,6 +85,7 @@
+ 
+ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dev,
+ 		       const struct in6_addr *daddr, unsigned int srcprefs,
++		       void *pvd,
+ 		       struct in6_addr *saddr);
+ int __ipv6_get_lladdr(struct inet6_dev *idev, struct in6_addr *addr,
+ 		      u32 banned_flags);
+@@ -98,14 +99,16 @@
  void addrconf_leave_solict(struct inet6_dev *idev, const struct in6_addr *addr);
  
  void addrconf_add_linklocal(struct inet6_dev *idev,
@@ -59,7 +87,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/addrconf.h ubuntu-4
  
  static inline int addrconf_ifid_eui48(u8 *eui, struct net_device *dev)
  {
-@@ -242,7 +244,8 @@
+@@ -242,7 +245,8 @@
  }
  
  void addrconf_prefix_rcv(struct net_device *dev,
@@ -69,7 +97,22 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/addrconf.h ubuntu-4
  
  /*
   *	anycast prototypes (anycast.c)
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/if_inet6.h ubuntu-4.10.0/include/net/if_inet6.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/flow.h ubuntu-4.10.0/include/net/flow.h
+--- ubuntu-4.10.0-orig/include/net/flow.h	2017-07-18 14:06:22.259543001 +0100
++++ ubuntu-4.10.0/include/net/flow.h	2017-10-08 16:55:17.713283378 +0100
+@@ -149,6 +149,11 @@
+ #define fl6_ipsec_spi		uli.spi
+ #define fl6_mh_type		uli.mht.type
+ #define fl6_gre_key		uli.gre_key
++
++#ifdef	CONFIG_NETPVD
++	void			*pvd;
++#define fl6_pvd			pvd
++#endif
+ } __attribute__((__aligned__(BITS_PER_LONG/8)));
+ 
+ struct flowidn {
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/if_inet6.h ubuntu-4.10.0/include/net/if_inet6.h
 --- ubuntu-4.10.0-orig/include/net/if_inet6.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/net/if_inet6.h	2017-07-18 14:25:07.399522852 +0100
 @@ -41,6 +41,7 @@
@@ -80,7 +123,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/if_inet6.h ubuntu-4
  
  	/* In seconds, relative to tstamp. Expiry is at tstamp + HZ * lft. */
  	__u32			valid_lft;
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_fib.h ubuntu-4.10.0/include/net/ip6_fib.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_fib.h ubuntu-4.10.0/include/net/ip6_fib.h
 --- ubuntu-4.10.0-orig/include/net/ip6_fib.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/net/ip6_fib.h	2017-07-18 14:25:07.399522852 +0100
 @@ -53,6 +53,10 @@
@@ -107,9 +150,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_fib.h ubuntu-4.
  };
  
  static inline struct inet6_dev *ip6_dst_idev(struct dst_entry *dst)
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_route.h ubuntu-4.10.0/include/net/ip6_route.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_route.h ubuntu-4.10.0/include/net/ip6_route.h
 --- ubuntu-4.10.0-orig/include/net/ip6_route.h	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/include/net/ip6_route.h	2017-07-18 14:25:07.399522852 +0100
++++ ubuntu-4.10.0/include/net/ip6_route.h	2017-10-08 16:55:49.553283532 +0100
 @@ -34,6 +34,10 @@
  #define RT6_LOOKUP_F_SRCPREF_COA	0x00000020
  #define RT6_LOOKUP_F_IGNORE_LINKSTATE	0x00000040
@@ -121,24 +164,31 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_route.h ubuntu-
  /* We do not (yet ?) support IPv6 jumbograms (RFC 2675)
   * Unlike IPv4, hdr->seg_len doesn't include the IPv6 header
   */
-@@ -90,7 +94,7 @@
+@@ -97,6 +101,7 @@
+ static inline int ip6_route_get_saddr(struct net *net, struct rt6_info *rt,
+ 				      const struct in6_addr *daddr,
+ 				      unsigned int prefs,
++				      void *pvd,
+ 				      struct in6_addr *saddr)
+ {
+ 	struct inet6_dev *idev =
+@@ -107,7 +112,7 @@
+ 		*saddr = rt->rt6i_prefsrc.addr;
+ 	else
+ 		err = ipv6_dev_get_saddr(net, idev ? idev->dev : NULL,
+-					 daddr, prefs, saddr);
++					 daddr, prefs, pvd, saddr);
  
- int ipv6_route_ioctl(struct net *net, unsigned int cmd, void __user *arg);
- 
--int ip6_route_add(struct fib6_config *cfg);
-+int ip6_route_add(struct fib6_config *cfg, const char *caller);
- int ip6_ins_rt(struct rt6_info *);
- int ip6_del_rt(struct rt6_info *);
- 
-@@ -121,7 +125,10 @@
+ 	return err;
+ }
+@@ -121,7 +126,9 @@
  void fib6_force_start_gc(struct net *net);
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
 -				    const struct in6_addr *addr, bool anycast);
 +				    const struct in6_addr *addr,
 +				    void *pvd,	/* CONFIG_NETPVD */
-+				    bool anycast,
-+				    const char *caller);
++				    bool anycast);
  
  struct rt6_info *ip6_dst_alloc(struct net *net, struct net_device *dev,
  			       int flags);
@@ -156,7 +206,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ip6_route.h ubuntu-
  
  void ip6_update_pmtu(struct sk_buff *skb, struct net *net, __be32 mtu, int oif,
  		     u32 mark, kuid_t uid);
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ndisc.h ubuntu-4.10.0/include/net/ndisc.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/ndisc.h ubuntu-4.10.0/include/net/ndisc.h
 --- ubuntu-4.10.0-orig/include/net/ndisc.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/net/ndisc.h	2017-07-28 10:37:27.875366305 +0100
 @@ -37,6 +37,9 @@
@@ -238,7 +288,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/ndisc.h ubuntu-4.10
  }
  #endif
  
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/net_namespace.h ubuntu-4.10.0/include/net/net_namespace.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/net_namespace.h ubuntu-4.10.0/include/net/net_namespace.h
 --- ubuntu-4.10.0-orig/include/net/net_namespace.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/net/net_namespace.h	2017-07-18 14:25:07.403522851 +0100
 @@ -39,11 +39,16 @@
@@ -301,9 +351,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/net_namespace.h ubu
  	/* core fib_rules */
  	struct list_head	rules_ops;
  
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/pvd.h ubuntu-4.10.0/include/net/pvd.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/pvd.h ubuntu-4.10.0/include/net/pvd.h
 --- ubuntu-4.10.0-orig/include/net/pvd.h	1970-01-01 01:00:00.000000000 +0100
-+++ ubuntu-4.10.0/include/net/pvd.h	2017-07-28 16:35:29.255470129 +0100
++++ ubuntu-4.10.0/include/net/pvd.h	2017-10-08 16:56:02.373283594 +0100
 @@ -0,0 +1,207 @@
 +
 +#ifndef	_NET_PVD_H
@@ -458,8 +508,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/pvd.h ubuntu-4.10.0
 +extern void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt);
 +extern int pvd_migrate_route(
 +		struct net_pvd *newpvd,
-+		struct rt6_info *rt,
-+		const char *func);
++		struct rt6_info *rt);
 +extern int pvd_migrate_addr(
 +		struct net_pvd *newpvd,
 +		struct inet6_ifaddr *addr);
@@ -482,6 +531,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/pvd.h ubuntu-4.10.0
 +extern int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex);
 +extern struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex);
 +extern int pvd_get_fullindex(struct net_pvd *pvd);
++extern int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd);
 +extern int sock_getbindtopvd(struct sock *sk, char __user *optval,
 +				int __user *optlen, int len);
 +extern int sock_setbindtopvd(struct sock *sk, char __user *optval,
@@ -512,9 +562,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/pvd.h ubuntu-4.10.0
 +#endif		/* CONFIG_NETPVD */
 +
 +#endif		/* _NET_PVD_H */
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/sock.h ubuntu-4.10.0/include/net/sock.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/net/sock.h ubuntu-4.10.0/include/net/sock.h
 --- ubuntu-4.10.0-orig/include/net/sock.h	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/include/net/sock.h	2017-07-18 14:25:07.403522851 +0100
++++ ubuntu-4.10.0/include/net/sock.h	2017-10-08 16:56:16.801283663 +0100
 @@ -129,6 +129,7 @@
   *	@skc_reuse: %SO_REUSEADDR setting
   *	@skc_reuseport: %SO_REUSEPORT setting
@@ -528,8 +578,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/sock.h ubuntu-4.10.
  	unsigned char		skc_net_refcnt:1;
  	int			skc_bound_dev_if;
 +#ifdef	CONFIG_NETPVD
-+	int			skc_n_bound_pvd;	/* -1 : undefined, #-1 : forcibly set */
-+	int			skc_bound_pvds[32];	/* FIXME : use MAXBOUNDPVD instead */
++	int			skc_pvd_bind_type;	/* 0 : inherit, 1 : unset, 2 : set */
++	int			skc_bound_pvd;		/* pvd index if type == 2 */
 +#endif
  	union {
  		struct hlist_node	skc_bind_node;
@@ -538,12 +588,12 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/net/sock.h ubuntu-4.10.
  #define sk_ipv6only		__sk_common.skc_ipv6only
  #define sk_net_refcnt		__sk_common.skc_net_refcnt
  #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
-+#define sk_n_bound_pvd		__sk_common.skc_n_bound_pvd
-+#define sk_bound_pvds		__sk_common.skc_bound_pvds
++#define sk_pvd_bind_type	__sk_common.skc_pvd_bind_type
++#define sk_bound_pvd		__sk_common.skc_bound_pvd
  #define sk_bind_node		__sk_common.skc_bind_node
  #define sk_prot			__sk_common.skc_prot
  #define sk_net			__sk_common.skc_net
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/asm-generic/socket.h ubuntu-4.10.0/include/uapi/asm-generic/socket.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/asm-generic/socket.h ubuntu-4.10.0/include/uapi/asm-generic/socket.h
 --- ubuntu-4.10.0-orig/include/uapi/asm-generic/socket.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/uapi/asm-generic/socket.h	2017-07-31 14:34:24.924687782 +0100
 @@ -94,4 +94,10 @@
@@ -557,7 +607,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/asm-generic/socket
 +#define	SO_CREATEPVD		58
 +
  #endif /* __ASM_GENERIC_SOCKET_H */
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/if_addr.h ubuntu-4.10.0/include/uapi/linux/if_addr.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/if_addr.h ubuntu-4.10.0/include/uapi/linux/if_addr.h
 --- ubuntu-4.10.0-orig/include/uapi/linux/if_addr.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/uapi/linux/if_addr.h	2017-07-18 14:25:07.403522851 +0100
 @@ -32,6 +32,7 @@
@@ -568,7 +618,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/if_addr.h ub
  	__IFA_MAX,
  };
  
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/Kbuild ubuntu-4.10.0/include/uapi/linux/Kbuild
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/Kbuild ubuntu-4.10.0/include/uapi/linux/Kbuild
 --- ubuntu-4.10.0-orig/include/uapi/linux/Kbuild	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/uapi/linux/Kbuild	2017-07-18 14:25:07.403522851 +0100
 @@ -353,6 +353,7 @@
@@ -579,10 +629,10 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/Kbuild ubunt
  header-y += qnx4_fs.h
  header-y += qnxtypes.h
  header-y += quota.h
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h ubuntu-4.10.0/include/uapi/linux/pvd-user.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h ubuntu-4.10.0/include/uapi/linux/pvd-user.h
 --- ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h	1970-01-01 01:00:00.000000000 +0100
-+++ ubuntu-4.10.0/include/uapi/linux/pvd-user.h	2017-07-28 16:41:26.015471853 +0100
-@@ -0,0 +1,194 @@
++++ ubuntu-4.10.0/include/uapi/linux/pvd-user.h	2017-10-08 16:57:09.105283916 +0100
+@@ -0,0 +1,189 @@
 +/*
 + * This header file contains definitions for use when exchanging
 + * data with the user space
@@ -590,8 +640,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h u
 + * The same file will also be installed for use by user space
 + * applications
 + *
-+ * SO_GETPVDINFO, SO_BINDTOPVD and SO_GETRALIST are defined in
-+ * another uapi header file (asm-generic/socket.h)
++ * SO_BINDTOPVD and Co are defined in another uapi header file
++ * (asm-generic/socket.h)
 + */
 +#ifndef	_UAPI_LINUX_PVD_USER_H
 +#define	_UAPI_LINUX_PVD_USER_H
@@ -635,9 +685,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h u
 +#endif
 +
 +/*
-+ * For SO_GETPVDINFO (which returns in one call all pvd and
-+ * their attributes) or SO_GETPVDATTRIBUTES (which returns
-+ * the attributes for a given PvD)
++ * For SO_GETPVDATTRIBUTES (which returns the attributes for a pvd)
 + *
 + * The net_pvd_attribute structure below is a copy of the
 + * kernel space pvd structure, with kernel specific items
@@ -679,29 +727,34 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h u
 +	struct in6_addr		rdnss[MAXRDNSSPERPVD];
 +};
 +
-+struct pvd_list {
-+	int npvd;	/* in/out */
-+	char pvds[MAXPVD][PVDNAMSIZ];
-+};
-+
 +struct pvd_attr {
 +	char __user *pvdname;	/* in */
 +	struct net_pvd_attribute *pvdattr;	/* out */
 +};
 +
 +/*
++ * For SO_GETPVDLIST (returns the list of pvds)
++ */
++struct pvd_list {
++	int npvd;	/* in/out */
++	char pvds[MAXPVD][PVDNAMSIZ];
++};
++
++/*
 + * For SO_BINDTOPVD (set and get)
 + */
-+#define	MAXBOUNDPVD	32	/* 1 practically after discussions */
-+
 +#define	PVD_BIND_SCOPE_SOCKET	0
 +#define	PVD_BIND_SCOPE_THREAD	1
 +#define	PVD_BIND_SCOPE_PROCESS	2
 +
++#define	PVD_BIND_INHERIT	0
++#define	PVD_BIND_NOPVD		1
++#define	PVD_BIND_ONEPVD		2
++
 +struct bind_to_pvd {
-+	int scope;
-+	int npvd;	/* in/out */
-+	char pvdnames[MAXBOUNDPVD][PVDNAMSIZ];
++	int scope;	/* PVD_BIND_SCOPE_XXX */
++	int bindtype;	/* PVD_BIND_INHERIT, ... */
++	char pvdname[PVDNAMSIZ];
 +};
 +
 +/*
@@ -720,14 +773,6 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h u
 +#define	PVD_ATTR_HFLAG		0x02
 +#define	PVD_ATTR_LFLAG		0x04
 +#define	PVD_ATTR_DEPRECATED	0x08
-+
-+/*
-+ * For SO_RT6PVD
-+ */
-+struct in6_rt_pvdmsg {
-+	char pvdname[PVDNAMSIZ];
-+	struct in6_rtmsg rtmsg;
-+};
 +
 +/*
 + * RTNETLINK related definitions
@@ -777,7 +822,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/pvd-user.h u
 +};
 +
 +#endif		/* _UAPI_LINUX_PVD_USER_H */
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/rtnetlink.h ubuntu-4.10.0/include/uapi/linux/rtnetlink.h
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/rtnetlink.h ubuntu-4.10.0/include/uapi/linux/rtnetlink.h
 --- ubuntu-4.10.0-orig/include/uapi/linux/rtnetlink.h	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/include/uapi/linux/rtnetlink.h	2017-07-18 14:25:07.407522851 +0100
 @@ -122,6 +122,8 @@
@@ -857,7 +902,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/include/uapi/linux/rtnetlink.h 
  	__RTNLGRP_MAX
  };
  #define RTNLGRP_MAX	(__RTNLGRP_MAX - 1)
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/kernel/configs/kvm_guest.config ubuntu-4.10.0/kernel/configs/kvm_guest.config
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/kernel/configs/kvm_guest.config ubuntu-4.10.0/kernel/configs/kvm_guest.config
 --- ubuntu-4.10.0-orig/kernel/configs/kvm_guest.config	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/kernel/configs/kvm_guest.config	2017-07-18 14:25:07.407522851 +0100
 @@ -1,6 +1,7 @@
@@ -868,7 +913,43 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/kernel/configs/kvm_guest.config
  CONFIG_BLOCK=y
  CONFIG_BLK_DEV=y
  CONFIG_NETWORK_FILESYSTEMS=y
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/core.c ubuntu-4.10.0/net/6lowpan/core.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/kernel/exit.c ubuntu-4.10.0/kernel/exit.c
+--- ubuntu-4.10.0-orig/kernel/exit.c	2017-07-18 14:06:22.339542999 +0100
++++ ubuntu-4.10.0/kernel/exit.c	2017-10-08 16:57:49.329284110 +0100
+@@ -839,6 +839,14 @@
+ 	exit_task_work(tsk);
+ 	exit_thread(tsk);
+ 
++#ifdef	CONFIG_NETPVD
++	if (tsk->bound_pvd != ((void *) 0) &&
++	    tsk->bound_pvd != ((void *) -1)) {
++		kfree(tsk->bound_pvd);
++		tsk->bound_pvd = NULL;
++	}
++#endif
++
+ 	/*
+ 	 * Flush inherited counters to the parent - before the parent
+ 	 * gets woken up by child-exit notifications.
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/kernel/fork.c ubuntu-4.10.0/kernel/fork.c
+--- ubuntu-4.10.0-orig/kernel/fork.c	2017-07-18 14:06:22.339542999 +0100
++++ ubuntu-4.10.0/kernel/fork.c	2017-10-08 16:58:09.573284208 +0100
+@@ -512,6 +512,14 @@
+ 	if (err)
+ 		goto free_stack;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * The new structure must inherit pvd from its parent (to avoid
++	 * keeping a kstrdup() pointer in multiple structures)
++	 */
++	tsk->bound_pvd = (void *) 0;
++#endif
++
+ #ifdef CONFIG_SECCOMP
+ 	/*
+ 	 * We must handle setting up seccomp filters once we're under
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/core.c ubuntu-4.10.0/net/6lowpan/core.c
 --- ubuntu-4.10.0-orig/net/6lowpan/core.c	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/net/6lowpan/core.c	2017-07-18 14:25:07.407522851 +0100
 @@ -127,7 +127,7 @@
@@ -880,7 +961,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/core.c ubuntu-4.10.
  		}
  		break;
  	case NETDEV_DOWN:
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/ndisc.c ubuntu-4.10.0/net/6lowpan/ndisc.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/ndisc.c ubuntu-4.10.0/net/6lowpan/ndisc.c
 --- ubuntu-4.10.0-orig/net/6lowpan/ndisc.c	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/net/6lowpan/ndisc.c	2017-07-18 14:25:07.407522851 +0100
 @@ -208,7 +208,8 @@
@@ -903,7 +984,18 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/6lowpan/ndisc.c ubuntu-4.10
  		if (err)
  			ND_PRINTK(2, warn,
  				  "RA: could not add a short address based address for prefix: %pI6c\n",
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/Makefile ubuntu-4.10.0/net/core/Makefile
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/bridge/br_multicast.c ubuntu-4.10.0/net/bridge/br_multicast.c
+--- ubuntu-4.10.0-orig/net/bridge/br_multicast.c	2017-07-18 14:06:22.419542998 +0100
++++ ubuntu-4.10.0/net/bridge/br_multicast.c	2017-10-08 16:58:54.989284428 +0100
+@@ -496,6 +496,7 @@
+ 	ip6h->hop_limit = 1;
+ 	ipv6_addr_set(&ip6h->daddr, htonl(0xff020000), 0, 0, htonl(1));
+ 	if (ipv6_dev_get_saddr(dev_net(br->dev), br->dev, &ip6h->daddr, 0,
++			       /* pvd */ NULL,
+ 			       &ip6h->saddr)) {
+ 		kfree_skb(skb);
+ 		br->has_ipv6_addr = 0;
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/core/Makefile ubuntu-4.10.0/net/core/Makefile
 --- ubuntu-4.10.0-orig/net/core/Makefile	2017-08-10 11:05:24.289046482 +0100
 +++ ubuntu-4.10.0/net/core/Makefile	2017-07-18 14:25:07.407522851 +0100
 @@ -28,3 +28,4 @@
@@ -911,10 +1003,10 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/Makefile ubuntu-4.10.0
  obj-$(CONFIG_HWBM) += hwbm.o
  obj-$(CONFIG_NET_DEVLINK) += devlink.o
 +obj-$(CONFIG_NETPVD) += pvd.o
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/net/core/pvd.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/net/core/pvd.c
 --- ubuntu-4.10.0-orig/net/core/pvd.c	1970-01-01 01:00:00.000000000 +0100
-+++ ubuntu-4.10.0/net/core/pvd.c	2017-08-28 22:50:40.324251780 +0100
-@@ -0,0 +1,2244 @@
++++ ubuntu-4.10.0/net/core/pvd.c	2017-10-02 18:01:29.385121000 +0100
+@@ -0,0 +1,2374 @@
 +/*
 + */
 +
@@ -933,6 +1025,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +#include <linux/seq_file.h>
 +#include <net/sock.h>
 +
++#include <linux/inet.h>
 +#include <linux/net.h>
 +#include <linux/route.h>
 +#include <linux/netdevice.h>
@@ -956,6 +1049,12 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +#define	DIM(t)	(sizeof(t) / sizeof(t[0]))
 +
++/*
++ * PTR values for the bound_pvd field of struct task
++ */
++#define	FORCE_NO_PVD_PTR	((void *) -1)
++#define	INHERIT_PVD_PTR		((void *) 0)
++
 +#define	MAXPVDINDEX	(1 << (32 - MAXPVDSHIFT))
 +#define	_TABIDX(f)	((f) & ((1 << MAXPVDSHIFT) - 1))
 +#define	_UNIQIDX(f)	(((f) >> MAXPVDSHIFT) & (MAXPVDINDEX - 1))
@@ -978,6 +1077,12 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	unsigned char nd_opt_dnssli_suffixes[];
 +};
 +
++struct net_pvd *__pvd_get_by_name(
++			struct net *net,
++			const char *name,
++			struct net_device *dev,
++			struct in6_addr *lla);
++
 +static seqcount_t pvd_rename_seq;
 +
 +static void pvd_check_lifetimes(unsigned long arg);
@@ -987,22 +1092,6 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +				struct net_device *dev,
 +				struct in6_addr *lla);
 +static void __unregister_pvd(struct net_pvd *pvd);
-+
-+static char *addrtostr(struct in6_addr const *addr, char *str)
-+{
-+	sprintf(str,
-+		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-+		addr->s6_addr[0], addr->s6_addr[1],
-+		addr->s6_addr[2], addr->s6_addr[3],
-+		addr->s6_addr[4], addr->s6_addr[5],
-+		addr->s6_addr[6], addr->s6_addr[7],
-+		addr->s6_addr[8], addr->s6_addr[9],
-+		addr->s6_addr[10], addr->s6_addr[11],
-+		addr->s6_addr[12], addr->s6_addr[13],
-+		addr->s6_addr[14], addr->s6_addr[15]);
-+
-+	return str;
-+}
 +
 +/* Initialize per network namespace state */
 +static int __net_init netpvd_init(struct net *net)
@@ -1071,7 +1160,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +		pvd->h_flag ? "true" : "false",
 +		pvd->l_flag ? "true" : "false",
 +		(unsigned long) pvd_get_fullindex(pvd),
-+		addrtostr(&pvd->lla, sAddr),
++		addr6tostr(pvd->lla.s6_addr, sAddr),
 +		pvd->dev ? pvd->dev->name : "<nodev>");
 +
 +	rcu_read_unlock();
@@ -1106,18 +1195,18 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +		seq_printf(seq, "%3d : ", i);
 +		seq_printf(seq, "%s/%-3d ", 
-+			   addrtostr(&rt->rt6i_dst.addr, sAddr),
++			   addr6tostr(rt->rt6i_dst.addr.s6_addr, sAddr),
 +			   rt->rt6i_dst.plen);
 +
 +#ifdef CONFIG_IPV6_SUBTREES
 +		seq_printf(seq, "%s/%-3d ",
-+			   addrtostr(&rt->rt6i_src.addr, sAddr),
++			   addr6tostr(rt->rt6i_src.addr.s6_addr, sAddr),
 +			   rt->rt6i_src.plen);
 +#else
 +		seq_printf(seq, "0000:0000:0000:0000:0000:0000:0000:0000/00 ");
 +#endif
 +		if (rt->rt6i_flags & RTF_GATEWAY)
-+			seq_printf(seq, "%s", addrtostr(&rt->rt6i_gateway, sAddr));
++			seq_printf(seq, "%s", addr6tostr(rt->rt6i_gateway.s6_addr, sAddr));
 +		else
 +			seq_puts(seq, "0000:0000:0000:0000:0000:0000:0000:0000");
 +
@@ -1162,7 +1251,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +		seq_printf(seq, "%3d : %s/%d %s (%p)\n", 
 +			   i,
-+			   addrtostr(&ifa->addr, sAddr),
++			   addr6tostr(ifa->addr.s6_addr, sAddr),
 +			   ifa->prefix_len,
 +			   ifa->idev->dev->name,
 +			   ifa);
@@ -1198,7 +1287,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +		seq_printf(seq, "%3d : %s\n", 
 +			   i,
-+			   addrtostr(&pvd->rdnss[i], sAddr));
++			   addr6tostr(pvd->rdnss[i].s6_addr, sAddr));
 +	}
 +
 +	rcu_read_unlock();
@@ -1367,7 +1456,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +			pvd->h_flag ? "true" : "false",
 +			pvd->l_flag ? "true" : "false",
 +			(unsigned long) pvd_get_fullindex(pvd),
-+			addrtostr(&pvd->lla, sAddr),
++			addr6tostr(pvd->lla.s6_addr, sAddr),
 +			pvd->dev ? pvd->dev->name : "<nodev>");
 +	}
 +
@@ -1397,7 +1486,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	}
 +
 +	if ((net->proc_pvdd = proc_mkdir("pvd.d", net->proc_net)) == NULL) {
-+		remove_proc_entry("pvds", net->proc_net);
++		remove_proc_entry("pvd", net->proc_net);
 +		return -ENOMEM;
 +	}
 +	return 0;
@@ -1566,8 +1655,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 + */
 +int	pvd_migrate_route(
 +		struct net_pvd *newpvd,
-+		struct rt6_info *rt,
-+		const char *func)
++		struct rt6_info *rt)
 +{
 +	int		i;
 +	int		deltaCount = 0;
@@ -1580,12 +1668,11 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +	oldpvd = rt->rt6i_pvd;
 +
-+	printk("pvd_migrate_route(pvd = %s, oldpvd = %s, rt = %p, dev = %s) called by %s\n",
++	printk("pvd_migrate_route(pvd = %s, oldpvd = %s, rt = %p, dev = %s)\n",
 +		newpvd ? newpvd->name : "<no pvd>",
 +		oldpvd ? oldpvd->name : "<no pvd>",
 +		rt,
-+		rt->dst.dev ? rt->dst.dev->name : "",
-+		func);
++		rt->dst.dev ? rt->dst.dev->name : "");
 +
 +	if (newpvd == oldpvd) {
 +		return(0);
@@ -1653,8 +1740,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +#if	0
 +	if (deltaCount == -1) {
 +		dst_release(&rt->dst);
-+	} else
-+	if (deltaCount == 1) {
++	} else if (deltaCount == 1) {
 +		dst_hold(&rt->dst);
 +	}
 +#endif
@@ -1786,8 +1872,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +#if	0
 +	if (deltaCount == -1) {
 +		in6_ifa_put(ifa);
-+	} else
-+	if (deltaCount == 1) {
++	} else if (deltaCount == 1) {
 +		in6_ifa_hold(ifa);
 +	}
 +#endif
@@ -2005,34 +2090,159 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +EXPORT_SYMBOL(pvd_register_dnssl);
 +
 +/*
-+ * alloc_bound_pvd : allocate a structure large enough to accept
-+ * a copy of user parameters defining a set of PvDs to bind to
++ * pvd_getboundpvd : given a socket, retrieve the first bound pvd if any
++ * If the socket is not bound, check if a pvd has been set at the thread
++ * or process level
 + *
-+ * It will be called to allocate a structure linked to :
-+ * 1) either a socket
-+ * 2) either a thread
-+ * 3) either a process
++ * The returned pvd gets one reference. The function returns 0 on success,
++ * a negative value on error
++ *
++ * Priority checking :
++ * 1) socket level first (can be forced to not use any pvd)
++ * 2) thread level (can be forced to not use any pvd)
++ * 3) process level (can be forced to not use any pvd)
++ *
++ * Internal API
 + */
++static int _pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd, int scope)
++{
++	struct task_struct *p = current;
++	int ret = 0;
 +
++	*pvd = NULL;
++
++	if (scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++	if (scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++
++socket_scope :
++	/*
++	 * Time to resolve the socket bound pvd (currently full index) to pvd pointer
++	 */
++	if (sk->sk_pvd_bind_type == PVD_BIND_INHERIT) {
++		if (scope == -1) {
++			goto thread_scope;
++		}
++		return 0;
++	}
++
++	if (sk->sk_pvd_bind_type == PVD_BIND_NOPVD) {
++		return 0;
++	}
++	if (sk->sk_pvd_bind_type == PVD_BIND_ONEPVD) {
++		rcu_read_lock();
++		pvd_hold(*pvd = __pvd_get_by_fullindex(
++					sock_net(sk),
++					sk->sk_bound_pvd));
++		rcu_read_unlock();
++		return *pvd == NULL ? -ENETUNREACH : 0;
++	}
++
++thread_scope :
++	/*
++	 * Check at the current thread/process level
++	 */
++	rcu_read_lock();
++	if (scope == -1 || scope == PVD_BIND_SCOPE_THREAD) {
++		if (p->bound_pvd == INHERIT_PVD_PTR) {
++			if (scope == PVD_BIND_SCOPE_THREAD) {
++				goto rcu_out;
++			}
++			goto process_scope_rcu;
++		}
++		if (p->bound_pvd == FORCE_NO_PVD_PTR) {
++			goto rcu_out;
++		}
++		/*
++		 * A pvdname has been specified -> convert it to a
++		 * pvd. In this case (success or failure), we don't
++		 * want to loookup at the parent's level
++		 */
++		pvd_hold(*pvd = __pvd_get_by_name(
++					sock_net(sk),
++					p->bound_pvd,
++					NULL,	/* dev */
++					NULL));	/* lla */
++		if (*pvd == NULL) {
++			ret = -ENETUNREACH;
++		}
++		goto rcu_out;
++	}
++
++process_scope :
++	rcu_read_lock();
++
++process_scope_rcu :
++	/*
++	 * Find the parent
++	 */
++	while (p &&
++	       p->real_parent &&
++	       p->real_parent->tgid == current->tgid) {
++		p = p->real_parent;
++	}
++
++	if (p == NULL) {
++		goto rcu_out;
++	}
++
++	if (p->bound_pvd == FORCE_NO_PVD_PTR ||
++	    p->bound_pvd == INHERIT_PVD_PTR) {
++		goto rcu_out;
++	}
++
++	pvd_hold(*pvd = __pvd_get_by_name(
++				sock_net(sk),
++				p->bound_pvd,
++				NULL,	/* dev */
++				NULL));	/* lla */
++	if (*pvd == NULL) {
++		ret = -ENETUNREACH;
++	}
++	goto rcu_out;
++
++rcu_out :
++	rcu_read_unlock();
++
++	return ret;
++}
++
++int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd)
++{
++	return _pvd_getboundpvd(sk, pvd, -1);
++}
++
++EXPORT_SYMBOL(pvd_getboundpvd);
 +
 +/*
-+ * release_bound_pvd : release a bound pvd structure
-+ */
-+
-+/*
-+ * ref_bound_pvd : add one reference to a bound pvd structure
-+ */
-+
-+/*
-+ * unref_bound_pvd : remove one reference to a bound pvd structure
-+ * If the refcount reaches 0, the structure is released
-+ */
-+
-+/*
-+ * sock_setbindtopvd : a socket can be bound to multiple pvd
++ * sock_setbindtopvd : a socket can be bound to at most one pvd
 + * The socket option argument is a handle to a pointer and
 + * not a pointer to the actual structure (the bind_to_pvd
 + * structure is too large to be copied on the kernel stack)
++ *
++ * Additionnaly, we may want to have the following pvd hint
++ * hierarchy :
++ * 1) socket level first (can be forced to not use any pvd)
++ * 2) thread level (can be forced to not use any pvd)
++ * 3) process level (can be forced to not use any pvd)
++ *
++ * The scope field of the bind_to_pvd structure tells us
++ * where to store the pvd hint
++ *
++ * For socket scope, it will be stored in the socket structure
++ * itself
++ *
++ * For thread scope, it will be stored in the current task
++ * structure
++ *
++ * For process scope, it will be stored in the parent task
++ * structure (in fact, in the top most parent with the same
++ * tgid as the current task)
++ *
++ * For socket scope, the pvdid will be stored
++ *
++ * For thread and process scopes, the pvd name will be stored
++ * (it will be turned into a pvd structure at a later stage)
 + *
 + * USERLAND ABI
 + */
@@ -2044,90 +2254,121 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	int ret = -ENOPROTOOPT;
 +	struct net *net = sock_net(sk);
 +	char pvdname[PVDNAMSIZ];
-+	int i;
-+	int npvds = 0;
-+	int unpvds = 0;
++	int ubindtype;
 +	struct bind_to_pvd __user *pbtp;
-+	int boundpvds[MAXBOUNDPVD];
-+
-+	ret = -EINVAL;
++	struct task_struct *p;
++ 
 +	if (optlen < 0) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	/* Bind this socket to a set of pvds, specified in an array
-+	 * The pvds are identified (for now) by pvd names
-+	 * If the number of pvds is 0 or all pvd ids are invalid,
-+	 * the socket is not bound
-+	 * If the socket is already bound to pvds, they are replaced
-+	 * by the new specification
-+	 */
 +	if (optlen != sizeof(struct bind_to_pvd *)) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	memset(boundpvds, 0xFF, sizeof(boundpvds));
-+
-+	ret = -EFAULT;
 +	if (copy_from_user(&pbtp, optval, optlen)) {
-+		goto out;
++		return -EFAULT;
 +	}
 +
-+	ret = -EINVAL;
-+	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds < 0 || unpvds > MAXBOUNDPVD) {
-+		goto out;
++	get_user(ubindtype, &pbtp->bindtype);
++	if (ubindtype != PVD_BIND_INHERIT &&
++	    ubindtype != PVD_BIND_NOPVD &&
++	    ubindtype != PVD_BIND_ONEPVD) {
++		return -EINVAL;
++	}
++
++	if (ubindtype == PVD_BIND_ONEPVD) {
++		int l = strncpy_from_user(pvdname, pbtp->pvdname, PVDNAMSIZ - 1);
++
++		if (l <= 0 || l == PVDNAMSIZ - 1) {
++			ret = l < 0 ? l : -EINVAL;
++			return ret;
++		}
 +	}
 +
 +	rcu_read_lock();
-+	for (i = 0; i < unpvds; i++) {
-+		struct net_pvd *pvd;
-+		int l = strncpy_from_user(pvdname, pbtp->pvdnames[i], PVDNAMSIZ - 1);
-+
-+		if (l < 0 || l == PVDNAMSIZ - 1) {
-+			ret = l < 0 ? l : -EINVAL;
-+			rcu_read_unlock();
-+			goto out;
-+		}
-+		if (l == 0) {
-+			continue;	/* empty name : simply ignore it */
-+		}
-+		if ((pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL)) == NULL) {
-+			continue;
-+		}
-+		/* Take one reference on the pvd */
-+		pvd_hold(pvd);
-+
-+		boundpvds[npvds++] = pvd_get_fullindex(pvd);
-+	}
-+
-+	/* Reset any previous bindings */
-+	lock_sock(sk);
-+
-+	for (i = 0; i < sk->sk_n_bound_pvd; i++) {
-+		struct net_pvd *pvd;
-+
-+		if ((pvd = __pvd_get_by_fullindex(
-+					net,
-+					sk->sk_bound_pvds[i])) != NULL) {
-+			pvd_put(pvd);
-+		}
-+	}
-+
-+	/* And update the new ones (possibly none) */
-+	sk->sk_n_bound_pvd = npvds;
-+	memcpy(sk->sk_bound_pvds, boundpvds, sizeof(sk->sk_bound_pvds));
-+	sk_dst_reset(sk);
-+	release_sock(sk);
-+
-+	rcu_read_unlock();
 +
 +	ret = 0;
 +
-+out:
++	if (pbtp->scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++
++	ret = -EINVAL;
++	goto rcu_out;
++
++	/* --------------------- THREAD SCOPE ------------------ */
++thread_scope :
++	p = current;
++	goto handle_process_thread_scope;
++
++	/* --------------------- PROCESS SCOPE ----------------- */
++process_scope :
++	for (p = current;
++		p && p->real_parent && p->real_parent->tgid == current->tgid;
++		    p = p->real_parent);
++
++handle_process_thread_scope :
++	if (p) {
++		if (p->bound_pvd != FORCE_NO_PVD_PTR &&
++			p->bound_pvd != INHERIT_PVD_PTR) {
++			kfree(p->bound_pvd);
++			p->bound_pvd = INHERIT_PVD_PTR;
++		}
++		if (ubindtype == PVD_BIND_INHERIT) {
++			p->bound_pvd = INHERIT_PVD_PTR;
++		} else if (ubindtype == PVD_BIND_NOPVD) {
++			p->bound_pvd = FORCE_NO_PVD_PTR;
++		}
++		else {
++			if (! (p->bound_pvd = kstrdup(pvdname, GFP_KERNEL))) {
++				p->bound_pvd = FORCE_NO_PVD_PTR;
++				ret = -ENOSPC;
++				goto rcu_out;
++			}
++		}
++		
++	}
++
++	goto rcu_out;
++
++	/* --------------------- SOCKET SCOPE ------------------ */
++socket_scope :
++	ret = 0;
++	lock_sock(sk);
++
++	sk->sk_pvd_bind_type = ubindtype;
++
++	if (ubindtype == PVD_BIND_ONEPVD) {
++		struct net_pvd *pvd;
++
++		if (! (pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL))) {
++			sk->sk_pvd_bind_type = PVD_BIND_NOPVD;
++			ret = -ENETUNREACH;
++		}
++		else {
++			sk->sk_bound_pvd = pvd_get_fullindex(pvd);
++		}
++	}
++	sk_dst_reset(sk);
++	release_sock(sk);
++
++rcu_out :
++	rcu_read_unlock();
++
 +	return ret;
 +}
 +
++/*
++ * sock_getbindtopvd : return the currently bound pvd for the
++ * specified scope.
++ *
++ * The scope is a strict hint here (contrary to the pvd_getboundpvd()
++ * kernel only call). This means that we don't want to fallback to
++ * higher level of the hierarchy (socket -> thread -> process)
++ *
++ * USERLAND ABI
++ */
 +int sock_getbindtopvd(
 +		struct sock *sk,
 +		char __user *optval,
@@ -2135,59 +2376,40 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +		int len)
 +{
 +	int ret = -ENOPROTOOPT;
-+	struct net *net = sock_net(sk);
-+	int boundpvds[DIM(sk->sk_bound_pvds)];
 +	struct bind_to_pvd __user *pbtp;
-+	int unpvds;
-+	int i, n, npvds, l;
++	int l;
++	struct net_pvd *pvd;
 +
-+	ret = -EINVAL;
 +	if (len != sizeof(struct bind_to_pvd *)) {
-+		goto out;
++		return -EINVAL;
 +	}
 +
-+	ret = -EFAULT;
 +	if (copy_from_user(&pbtp, optval, len)) {
-+		goto out;
-+	}
-+
-+	ret = -EINVAL;
-+	get_user(unpvds, &pbtp->npvd);
-+	if (unpvds < 0 || unpvds > MAXBOUNDPVD) {	// npvd will be updated
-+		goto out;
++		return -EFAULT;
 +	}
 +
 +	lock_sock(sk);
-+
-+	npvds = sk->sk_n_bound_pvd;
-+	memcpy(boundpvds, sk->sk_bound_pvds, sizeof(sk->sk_bound_pvds));
-+
++	ret = _pvd_getboundpvd(sk, &pvd, pbtp->scope);
 +	release_sock(sk);
-+
-+	rcu_read_lock();
-+	for (n = 0, i = 0; i < npvds && i < unpvds; i++) {
-+		struct net_pvd *pvd;
-+
-+		if ((pvd = __pvd_get_by_fullindex(net, boundpvds[i])) != NULL) {
-+			if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
-+				l = PVDNAMSIZ - 1;
-+			}
-+			ret = -EFAULT;
-+			if (copy_to_user(pbtp->pvdnames[n],
-+					 pvd->name, l + 1)) {
-+				rcu_read_unlock();
-+				goto out;
-+			}
-+			n++;
-+		}
++	if (ret != 0) {
++		return ret;
 +	}
-+	put_user(n, &pbtp->npvd);
 +
-+	rcu_read_unlock();
++	if (pvd != NULL) {
++		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++			l = PVDNAMSIZ - 1;	/* should not happen */
++		}
++		if (copy_to_user(pbtp->pvdname,
++				 pvd->name, l + 1)) {
++			ret = -EFAULT;
++		}
++		pvd_put(pvd);
++		put_user(PVD_BIND_ONEPVD, &pbtp->bindtype);
++	} else {
++		put_user(PVD_BIND_NOPVD, &pbtp->bindtype);
++	}
 +
-+	ret = 0;
-+out :
-+	return ret;
++	return 0;
 +}
 +
 +/*
@@ -2914,7 +3136,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +		char sPvdName[PVDNAMSIZ];
 +		char sAddr[64];
 +
-+		sprintf(sPvdName, "%s%%%s", addrtostr(lla, sAddr), dev->name);
++		sprintf(sPvdName, "%s%%%s", addr6tostr(lla->s6_addr, sAddr), dev->name);
 +		pvdname = sPvdName;
 +		FlagImplicit = true;
 +	}
@@ -3003,7 +3225,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +	int	i;
 +
 +	printk("unregister_pvd(%s) called\n", pvd ? pvd->name : "<no pvd>");
-+	
++
 +	if (pvd) {
 +#ifdef CONFIG_PROC_FS
 +		unregister_proc_pvd(pvd_net(pvd), pvd);
@@ -3159,9 +3381,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/pvd.c ubuntu-4.10.0/ne
 +
 +#endif	/* CONFIG_NETPVD */
 +
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/sock.c ubuntu-4.10.0/net/core/sock.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/core/sock.c ubuntu-4.10.0/net/core/sock.c
 --- ubuntu-4.10.0-orig/net/core/sock.c	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/net/core/sock.c	2017-07-31 14:34:18.336687750 +0100
++++ ubuntu-4.10.0/net/core/sock.c	2017-10-08 16:59:23.909284568 +0100
 @@ -106,6 +106,10 @@
  #include <linux/string.h>
  #include <linux/sockios.h>
@@ -3214,15 +3436,38 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/core/sock.c ubuntu-4.10.0/n
  #endif
  
 +#ifdef	CONFIG_NET_PVD
-+	sk->sk_n_bound_pvd	=	-1;	/* no bindings defined yet */
++	sk->sk_pvd_bind_type	=	0;
 +#endif
 +
  	sk->sk_max_pacing_rate = ~0U;
  	sk->sk_pacing_rate = ~0U;
  	sk->sk_incoming_cpu = -1;
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10.0/net/ipv6/addrconf.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/core/utils.c ubuntu-4.10.0/net/core/utils.c
+--- ubuntu-4.10.0-orig/net/core/utils.c	2017-07-18 14:06:22.431542998 +0100
++++ ubuntu-4.10.0/net/core/utils.c	2017-10-08 16:59:31.081284602 +0100
+@@ -348,3 +348,19 @@
+ 	}
+ }
+ EXPORT_SYMBOL(inet_proto_csum_replace_by_diff);
++
++char *addr6tostr(u8 const *addr, char *str)
++{
++	sprintf(str,
++		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
++		addr[0], addr[1],
++		addr[2], addr[3],
++		addr[4], addr[5],
++		addr[6], addr[7],
++		addr[8], addr[9],
++		addr[10], addr[11],
++		addr[12], addr[13],
++		addr[14], addr[15]);
++	return(str);
++}
++EXPORT_SYMBOL(addr6tostr);
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10.0/net/ipv6/addrconf.c
 --- ubuntu-4.10.0-orig/net/ipv6/addrconf.c	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/addrconf.c	2017-08-28 17:19:32.720155756 +0100
++++ ubuntu-4.10.0/net/ipv6/addrconf.c	2017-10-08 17:04:04.625285924 +0100
 @@ -80,6 +80,11 @@
  #include <net/tcp.h>
  #include <net/ip.h>
@@ -3235,29 +3480,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  #include <net/pkt_sched.h>
  #include <net/l3mdev.h>
  #include <linux/if_tunnel.h>
-@@ -107,6 +112,21 @@
- #define IPV6_MAX_STRLEN \
- 	sizeof("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255")
- 
-+static char *addrtostr(struct in6_addr const *addr, char *str)
-+{
-+	sprintf(str,
-+		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-+		addr->s6_addr[0], addr->s6_addr[1],
-+		addr->s6_addr[2], addr->s6_addr[3],
-+		addr->s6_addr[4], addr->s6_addr[5],
-+		addr->s6_addr[6], addr->s6_addr[7],
-+		addr->s6_addr[8], addr->s6_addr[9],
-+		addr->s6_addr[10], addr->s6_addr[11],
-+		addr->s6_addr[12], addr->s6_addr[13],
-+		addr->s6_addr[14], addr->s6_addr[15]);
-+	return(str);
-+}
-+
- static inline u32 cstamp_delta(unsigned long cstamp)
- {
- 	return (cstamp - INITIAL_JIFFIES) * 100UL / HZ;
-@@ -906,6 +926,11 @@
+@@ -906,6 +911,11 @@
  	}
  	ip6_rt_put(ifp->rt);
  
@@ -3269,18 +3492,17 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	kfree_rcu(ifp, rcu);
  }
  
-@@ -939,7 +964,9 @@
+@@ -939,7 +949,8 @@
  static struct inet6_ifaddr *
  ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  	      const struct in6_addr *peer_addr, int pfxlen,
 -	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft)
 +	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft,
-+	      void *pvd,
-+	      const char *caller)
++	      void *pvd)
  {
  	struct inet6_ifaddr *ifa = NULL;
  	struct rt6_info *rt;
-@@ -947,6 +974,17 @@
+@@ -947,6 +958,17 @@
  	int err = 0;
  	int addr_type = ipv6_addr_type(addr);
  
@@ -3290,7 +3512,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
 +
 +		printk("ipv6_add_addr(pvd = %s, addr = %s, %s) called\n",
 +			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
-+			addrtostr(addr, sAddr),
++			addr6tostr(addr->s6_addr, sAddr),
 +			idev->dev->name);
 +	}
 +#endif
@@ -3298,16 +3520,16 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	if (addr_type == IPV6_ADDR_ANY ||
  	    addr_type & IPV6_ADDR_MULTICAST ||
  	    (!(idev->dev->flags & IFF_LOOPBACK) &&
-@@ -981,7 +1019,7 @@
+@@ -981,7 +1003,7 @@
  		goto out;
  	}
  
 -	rt = addrconf_dst_alloc(idev, addr, false);
-+	rt = addrconf_dst_alloc(idev, addr, pvd, false, caller);
++	rt = addrconf_dst_alloc(idev, addr, pvd, false);
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		goto out;
-@@ -1003,6 +1041,12 @@
+@@ -1003,6 +1025,12 @@
  	ifa->prefered_lft = prefered_lft;
  	ifa->cstamp = ifa->tstamp = jiffies;
  	ifa->tokenized = false;
@@ -3320,7 +3542,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	ifa->rt = rt;
  
-@@ -1027,6 +1071,7 @@
+@@ -1027,6 +1055,7 @@
  	}
  
  	in6_ifa_hold(ifa);
@@ -3328,29 +3550,66 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	write_unlock(&idev->lock);
  out2:
  	rcu_read_unlock_bh();
-@@ -1288,7 +1333,9 @@
+@@ -1288,7 +1317,8 @@
  
  	ift = ipv6_add_addr(idev, &addr, NULL, tmp_plen,
  			    ipv6_addr_scope(&addr), addr_flags,
 -			    tmp_valid_lft, tmp_prefered_lft);
 +			    tmp_valid_lft, tmp_prefered_lft,
-+			    ifp->pvd,
-+			    __func__);	/* same pvd */
++			    ifp->pvd);	/* same pvd */
  	if (IS_ERR(ift)) {
  		in6_ifa_put(ifp);
  		in6_dev_put(idev);
-@@ -1975,7 +2022,9 @@
+@@ -1347,6 +1377,7 @@
+ 	int ifindex;
+ 	int scope;
+ 	int label;
++	void *pvd;
+ 	unsigned int prefs;
+ };
+ 
+@@ -1446,7 +1477,13 @@
+ 	    }
+ #endif
+ 	case IPV6_SADDR_RULE_OIF:
+-		/* Rule 5: Prefer outgoing interface */
++		/* Rule 5: Prefer pvd (if specified) AND outgoing interface */
++#ifdef	CONFIG_NETPVD
++	    	if (dst->pvd != NULL && dst->pvd != score->ifa->pvd) {
++			ret = 0;
++			break;
++		}
++#endif
+ 		ret = (!dst->ifindex ||
+ 		       dst->ifindex == score->ifa->idev->dev->ifindex);
+ 		break;
+@@ -1603,6 +1640,7 @@
+ 
+ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
+ 		       const struct in6_addr *daddr, unsigned int prefs,
++		       void *pvd,
+ 		       struct in6_addr *saddr)
+ {
+ 	struct ipv6_saddr_score scores[2], *hiscore;
+@@ -1615,6 +1653,7 @@
+ 
+ 	dst_type = __ipv6_addr_type(daddr);
+ 	dst.addr = daddr;
++	dst.pvd = pvd;
+ 	dst.ifindex = dst_dev ? dst_dev->ifindex : 0;
+ 	dst.scope = __ipv6_addr_src_scope(dst_type);
+ 	dst.label = ipv6_addr_label(net, daddr, dst_type, dst.ifindex);
+@@ -1975,7 +2014,8 @@
  
  		ifp2 = ipv6_add_addr(idev, &new_addr, NULL, pfxlen,
  				     scope, flags, valid_lft,
 -				     preferred_lft);
 +				     preferred_lft,
-+				     ifp->pvd,
-+				     __func__);	/* same pvd */
++				     ifp->pvd);	/* same pvd */
  		if (IS_ERR(ifp2))
  			goto lock_errdad;
  
-@@ -2216,7 +2265,8 @@
+@@ -2216,7 +2256,8 @@
  
  static void
  addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
@@ -3360,7 +3619,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_PREFIX,
-@@ -2230,6 +2280,9 @@
+@@ -2230,6 +2271,9 @@
  	};
  
  	cfg.fc_dst = *pfx;
@@ -3370,16 +3629,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	/* Prevent useless cloning on PtP SIT.
  	   This thing is done here expecting that the whole
-@@ -2240,7 +2293,7 @@
- 		cfg.fc_flags |= RTF_NONEXTHOP;
- #endif
- 
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
- }
- 
- 
-@@ -2282,7 +2335,7 @@
+@@ -2282,7 +2326,7 @@
  
  /* Create "default" multicast route to the interface */
  
@@ -3388,7 +3638,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_LOCAL,
-@@ -2294,11 +2347,14 @@
+@@ -2294,11 +2338,14 @@
  	};
  
  	ipv6_addr_set(&cfg.fc_dst, htonl(0xFF000000), 0, 0, 0);
@@ -3396,8 +3646,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
 +	cfg.fc_pvd = pvd;
 +#endif
  
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
+ 	ip6_route_add(&cfg);
  }
  
 -static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
@@ -3405,7 +3654,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct inet6_dev *idev;
  
-@@ -2313,7 +2369,7 @@
+@@ -2313,7 +2360,7 @@
  
  	/* Add default multicast route */
  	if (!(dev->flags & IFF_LOOPBACK) && !netif_is_l3_master(dev))
@@ -3414,7 +3663,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	return idev;
  }
-@@ -2396,7 +2452,8 @@
+@@ -2396,7 +2443,8 @@
  				 struct inet6_dev *in6_dev,
  				 const struct in6_addr *addr, int addr_type,
  				 u32 addr_flags, bool sllao, bool tokenized,
@@ -3424,18 +3673,17 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct inet6_ifaddr *ifp = ipv6_get_ifaddr(net, addr, dev, 1);
  	int create = 0, update_lft = 0;
-@@ -2419,7 +2476,9 @@
+@@ -2419,7 +2467,8 @@
  					    pinfo->prefix_len,
  					    addr_type&IPV6_ADDR_SCOPE_MASK,
  					    addr_flags, valid_lft,
 -					    prefered_lft);
 +					    prefered_lft,
-+					    pvd,
-+					    __func__);	/* pvd will be updated below */
++					    pvd);	/* pvd will be updated below */
  
  		if (IS_ERR_OR_NULL(ifp))
  			return -1;
-@@ -2439,6 +2498,11 @@
+@@ -2439,6 +2488,11 @@
  		unsigned long now;
  		u32 stored_lft;
  
@@ -3447,7 +3695,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		/* update lifetime (RFC2462 5.5.3 e) */
  		spin_lock_bh(&ifp->lock);
  		now = jiffies;
-@@ -2488,7 +2552,7 @@
+@@ -2488,7 +2542,7 @@
  }
  EXPORT_SYMBOL_GPL(addrconf_prefix_rcv_add_addr);
  
@@ -3456,41 +3704,36 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct prefix_info *pinfo;
  	__u32 valid_lft;
-@@ -2500,6 +2564,23 @@
+@@ -2500,6 +2554,18 @@
  
  	pinfo = (struct prefix_info *) opt;
  
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
 +
 +		printk("addrconf_prefix_rcv(pvd = %s, %s/%d, %s)\n",
-+#ifdef	CONFIG_NETPVD
 +			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
-+#else
-+			"<no pvd>",
-+#endif
-+			addrtostr(&pinfo->prefix, sAddr), pinfo->prefix_len,
-+			dev->name
-+			);
++			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
++			dev->name);
 +	}
-+	/* ! T.DANIS */
++#endif
 +
 +
  	if (len < sizeof(struct prefix_info)) {
  		ADBG("addrconf: prefix option too short\n");
  		return;
-@@ -2570,6 +2651,9 @@
+@@ -2570,6 +2636,9 @@
  			} else {
  				rt6_clean_expires(rt);
  			}
 +#ifdef	CONFIG_NETPVD
-+			pvd_migrate_route(pvd, rt, __func__);
++			pvd_migrate_route(pvd, rt);
 +#endif
  		} else if (valid_lft) {
  			clock_t expires = 0;
  			int flags = RTF_ADDRCONF | RTF_PREFIX_RT;
-@@ -2579,7 +2663,8 @@
+@@ -2579,7 +2648,8 @@
  				expires = jiffies_to_clock_t(rt_expires);
  			}
  			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
@@ -3500,7 +3743,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		}
  		ip6_rt_put(rt);
  	}
-@@ -2621,10 +2706,13 @@
+@@ -2621,7 +2691,8 @@
  						   &addr, addr_type,
  						   addr_flags, sllao,
  						   tokenized, valid_lft,
@@ -3510,12 +3753,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		if (err)
  			goto put;
  
-+		printk("dev_addr_generated (%s)\n", dev_addr_generated ? "true" : "false");
-+
- 		/* Ignore error case here because previous prefix add addr was
- 		 * successful which will be notified.
- 		 */
-@@ -2632,9 +2720,26 @@
+@@ -2632,9 +2703,21 @@
  					      addr_type, addr_flags, sllao,
  					      tokenized, valid_lft,
  					      prefered_lft,
@@ -3525,25 +3763,20 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	}
  	inet6_prefix_notify(RTM_NEWPREFIX, in6_dev, pinfo);
 +
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
 +
 +		printk("inet6_prefix_notify(RTM_NEWPREFIX) called (%s/%d) [%s]\n",
-+			addrtostr(&pinfo->prefix, sAddr), pinfo->prefix_len,
-+#ifdef	CONFIG_NETPVD
-+			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>"
-+#else
-+			"<no pvd>"
-+#endif
-+			);
++			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
++			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
 +	}
-+	/* ! T.DANIS */
++#endif
 +
  put:
  	in6_dev_put(in6_dev);
  }
-@@ -2729,7 +2834,8 @@
+@@ -2729,7 +2812,8 @@
  			  const struct in6_addr *pfx,
  			  const struct in6_addr *peer_pfx,
  			  unsigned int plen, __u32 ifa_flags,
@@ -3553,7 +3786,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct inet6_ifaddr *ifp;
  	struct inet6_dev *idev;
-@@ -2755,7 +2861,7 @@
+@@ -2755,7 +2839,7 @@
  	if (!dev)
  		return -ENODEV;
  
@@ -3562,14 +3795,13 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	if (IS_ERR(idev))
  		return PTR_ERR(idev);
  
-@@ -2788,12 +2894,15 @@
+@@ -2788,12 +2872,14 @@
  	}
  
  	ifp = ipv6_add_addr(idev, pfx, peer_pfx, plen, scope, ifa_flags,
 -			    valid_lft, prefered_lft);
 +			    valid_lft, prefered_lft,
-+			    pvd,
-+			    __func__);
++			    pvd);
  
  	if (!IS_ERR(ifp)) {
  		if (!(ifa_flags & IFA_F_NOPREFIXROUTE)) {
@@ -3580,7 +3812,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		}
  
  		/*
-@@ -2873,7 +2982,8 @@
+@@ -2873,7 +2959,8 @@
  	rtnl_lock();
  	err = inet6_addr_add(net, ireq.ifr6_ifindex, &ireq.ifr6_addr, NULL,
  			     ireq.ifr6_prefixlen, IFA_F_PERMANENT,
@@ -3590,7 +3822,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	rtnl_unlock();
  	return err;
  }
-@@ -2897,13 +3007,16 @@
+@@ -2897,13 +2984,15 @@
  }
  
  static void add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
@@ -3604,12 +3836,11 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  			    scope, IFA_F_PERMANENT,
 -			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME);
 +			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME,
-+			    pvd,
-+			    __func__);
++			    pvd);
  	if (!IS_ERR(ifp)) {
  		spin_lock_bh(&ifp->lock);
  		ifp->flags &= ~IFA_F_TENTATIVE;
-@@ -2939,8 +3052,8 @@
+@@ -2939,8 +3028,8 @@
  	}
  
  	if (addr.s6_addr32[3]) {
@@ -3620,7 +3851,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		return;
  	}
  
-@@ -2963,9 +3076,10 @@
+@@ -2963,9 +3052,10 @@
  					flag |= IFA_HOST;
  				}
  
@@ -3633,7 +3864,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  			}
  		}
  	}
-@@ -2989,7 +3103,7 @@
+@@ -2989,7 +3079,7 @@
  		return;
  	}
  
@@ -3642,16 +3873,16 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	/* Add routes to other interface's IPv6 addresses */
  	for_each_netdev(dev_net(dev), sp_dev) {
-@@ -3019,7 +3133,7 @@
+@@ -3019,7 +3109,7 @@
  				}
  			}
  
 -			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, false);
-+			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, sp_ifa->pvd, false, __func__);
++			sp_rt = addrconf_dst_alloc(idev, &sp_ifa->addr, sp_ifa->pvd, false);
  
  			/* Failure cases are ignored */
  			if (!IS_ERR(sp_rt)) {
-@@ -3032,7 +3146,8 @@
+@@ -3032,7 +3122,8 @@
  }
  
  void addrconf_add_linklocal(struct inet6_dev *idev,
@@ -3661,21 +3892,20 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct inet6_ifaddr *ifp;
  	u32 addr_flags = flags | IFA_F_PERMANENT;
-@@ -3044,9 +3159,11 @@
+@@ -3044,9 +3135,10 @@
  #endif
  
  	ifp = ipv6_add_addr(idev, addr, NULL, 64, IFA_LINK, addr_flags,
 -			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME);
 +			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME,
-+			    pvd,
-+			    __func__);
++			    pvd);
  	if (!IS_ERR(ifp)) {
 -		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0);
 +		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0, pvd);
  		addrconf_dad_start(ifp);
  		in6_ifa_put(ifp);
  	}
-@@ -3142,7 +3259,7 @@
+@@ -3142,7 +3234,7 @@
  	s->initialized = true;
  }
  
@@ -3684,7 +3914,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	struct in6_addr addr;
  
-@@ -3159,9 +3276,10 @@
+@@ -3159,9 +3251,10 @@
  	case IN6_ADDR_GEN_MODE_STABLE_PRIVACY:
  		if (!ipv6_generate_stable_address(&addr, 0, idev))
  			addrconf_add_linklocal(idev, &addr,
@@ -3697,7 +3927,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		break;
  	case IN6_ADDR_GEN_MODE_EUI64:
  		/* addrconf_add_linklocal also adds a prefix_route and we
-@@ -3169,9 +3287,9 @@
+@@ -3169,9 +3262,9 @@
  		 * couldn't generate one.
  		 */
  		if (ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) == 0)
@@ -3709,7 +3939,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		break;
  	case IN6_ADDR_GEN_MODE_NONE:
  	default:
-@@ -3198,7 +3316,7 @@
+@@ -3198,7 +3291,7 @@
  		return;
  	}
  
@@ -3718,7 +3948,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	if (IS_ERR(idev))
  		return;
  
-@@ -3207,7 +3325,7 @@
+@@ -3207,7 +3300,7 @@
  	    idev->addr_gen_mode == IN6_ADDR_GEN_MODE_EUI64)
  		idev->addr_gen_mode = IN6_ADDR_GEN_MODE_RANDOM;
  
@@ -3727,7 +3957,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  }
  
  #if IS_ENABLED(CONFIG_IPV6_SIT)
-@@ -3230,14 +3348,14 @@
+@@ -3230,14 +3323,14 @@
  	}
  
  	if (dev->priv_flags & IFF_ISATAP) {
@@ -3744,7 +3974,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  }
  #endif
  
-@@ -3254,9 +3372,9 @@
+@@ -3254,9 +3347,9 @@
  		return;
  	}
  
@@ -3756,16 +3986,16 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  }
  #endif
  
-@@ -3270,7 +3388,7 @@
+@@ -3270,7 +3363,7 @@
  	if (!ifp->rt || !atomic_read(&ifp->rt->rt6i_ref)) {
  		struct rt6_info *rt, *prev;
  
 -		rt = addrconf_dst_alloc(idev, &ifp->addr, false);
-+		rt = addrconf_dst_alloc(idev, &ifp->addr, ifp->pvd, false, __func__);
++		rt = addrconf_dst_alloc(idev, &ifp->addr, ifp->pvd, false);
  		if (unlikely(IS_ERR(rt)))
  			return PTR_ERR(rt);
  
-@@ -3285,7 +3403,8 @@
+@@ -3285,7 +3378,8 @@
  
  	if (!(ifp->flags & IFA_F_NOPREFIXROUTE)) {
  		addrconf_prefix_route(&ifp->addr, ifp->prefix_len,
@@ -3775,7 +4005,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	}
  
  	if (ifp->state == INET6_IFADDR_STATE_PREDAD)
-@@ -4146,13 +4265,24 @@
+@@ -4146,13 +4240,24 @@
  static int if6_seq_show(struct seq_file *seq, void *v)
  {
  	struct inet6_ifaddr *ifp = (struct inet6_ifaddr *)v;
@@ -3802,7 +4032,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	return 0;
  }
  
-@@ -4414,7 +4544,8 @@
+@@ -4414,7 +4519,8 @@
  }
  
  static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
@@ -3812,7 +4042,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  {
  	u32 flags;
  	clock_t expires;
-@@ -4461,13 +4592,17 @@
+@@ -4461,13 +4567,17 @@
  	ifp->valid_lft = valid_lft;
  	ifp->prefered_lft = prefered_lft;
  
@@ -3831,7 +4061,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	} else if (had_prefixroute) {
  		enum cleanup_prefix_rt_t action;
  		unsigned long rt_expires;
-@@ -4506,6 +4641,7 @@
+@@ -4506,6 +4616,7 @@
  	u32 valid_lft = INFINITY_LIFE_TIME, preferred_lft = INFINITY_LIFE_TIME;
  	u32 ifa_flags;
  	int err;
@@ -3839,21 +4069,18 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFA_MAX, ifa_ipv6_policy);
  	if (err < 0)
-@@ -4527,6 +4663,25 @@
+@@ -4527,6 +4638,22 @@
  		valid_lft = INFINITY_LIFE_TIME;
  	}
  
 +#ifdef	CONFIG_NETPVD
 +	if (tb[IFA_PVD]) {
-+		printk("IFA_PVD : len = %d\n", nla_len(tb[IFA_PVD]));
-+
 +		if (nla_len(tb[IFA_PVD]) > PVDNAMSIZ) {
 +			return -EINVAL;
 +		}
 +		if (nla_len(tb[IFA_PVD]) == 0) {
 +			pvd = NULL;
-+		} else
-+		if ((pvd = pvd_get_by_name(
++		} else if ((pvd = pvd_get_by_name(
 +					sock_net(skb->sk),
 +					nla_data(tb[IFA_PVD]),
 +					NULL, NULL)) == NULL) {
@@ -3865,7 +4092,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  	dev =  __dev_get_by_index(net, ifm->ifa_index);
  	if (!dev)
  		return -ENODEV;
-@@ -4545,14 +4700,15 @@
+@@ -4545,14 +4672,15 @@
  		 */
  		return inet6_addr_add(net, ifm->ifa_index, pfx, peer_pfx,
  				      ifm->ifa_prefixlen, ifa_flags,
@@ -3883,7 +4110,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  
  	in6_ifa_put(ifa);
  
-@@ -4655,6 +4811,21 @@
+@@ -4655,6 +4783,17 @@
  	if (nla_put_u32(skb, IFA_FLAGS, ifa->flags) < 0)
  		goto error;
  
@@ -3893,19 +4120,15 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
 +		char *pvdname = pvd->name;
 +
 +		if (! pvd->implicit_flag) {
-+			printk("Addr associated to pvd %s\n", pvdname);
-+
 +			if (nla_put(skb, IFA_PVD, strlen(pvdname) + 1, pvdname))
 +				goto error;
-+
-+			printk("IFA_PVD pushed on skb\n");
 +		}
 +	}
 +#endif
  	nlmsg_end(skb, nlh);
  	return 0;
  
-@@ -5473,7 +5644,8 @@
+@@ -5473,7 +5612,8 @@
  			addrconf_join_anycast(ifp);
  		if (!ipv6_addr_any(&ifp->peer_addr))
  			addrconf_prefix_route(&ifp->peer_addr, 128,
@@ -3915,7 +4138,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  		break;
  	case RTM_DELADDR:
  		if (ifp->idev->cnf.forwarding)
-@@ -5483,7 +5655,8 @@
+@@ -5483,7 +5623,8 @@
  			struct rt6_info *rt;
  
  			rt = addrconf_get_prefix_route(&ifp->peer_addr, 128,
@@ -3925,22 +4148,79 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/addrconf.c ubuntu-4.10
  			if (rt)
  				ip6_del_rt(rt);
  		}
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/anycast.c ubuntu-4.10.0/net/ipv6/anycast.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/anycast.c ubuntu-4.10.0/net/ipv6/anycast.c
 --- ubuntu-4.10.0-orig/net/ipv6/anycast.c	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/anycast.c	2017-07-18 14:25:07.415522851 +0100
++++ ubuntu-4.10.0/net/ipv6/anycast.c	2017-10-08 17:04:16.393285981 +0100
 @@ -262,7 +262,7 @@
  		}
  	}
  
 -	rt = addrconf_dst_alloc(idev, addr, true);
-+	rt = addrconf_dst_alloc(idev, addr, NULL, true, __func__);	/* FIXME : pvd == NULL for now */
++	rt = addrconf_dst_alloc(idev, addr, NULL, true);	/* FIXME : pvd == NULL for now */
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		goto out;
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c ubuntu-4.10.0/net/ipv6/ip6_fib.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/datagram.c ubuntu-4.10.0/net/ipv6/datagram.c
+--- ubuntu-4.10.0-orig/net/ipv6/datagram.c	2017-07-18 14:06:22.451542997 +0100
++++ ubuntu-4.10.0/net/ipv6/datagram.c	2017-10-08 17:04:46.617286127 +0100
+@@ -83,6 +83,18 @@
+ 	}
+ 	ip6_datagram_flow_key_init(&fl6, sk);
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection of the connect() process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		goto out;
++	}
++#endif
++
+ 	rcu_read_lock();
+ 	opt = flowlabel ? flowlabel->opt : rcu_dereference(np->opt);
+ 	final_p = fl6_update_dst(&fl6, opt, &final);
+@@ -117,6 +129,11 @@
+ 
+ out:
+ 	fl6_sock_release(flowlabel);
++
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return err;
+ }
+ 
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/fib6_rules.c ubuntu-4.10.0/net/ipv6/fib6_rules.c
+--- ubuntu-4.10.0-orig/net/ipv6/fib6_rules.c	2017-07-18 14:06:22.451542997 +0100
++++ ubuntu-4.10.0/net/ipv6/fib6_rules.c	2017-10-08 17:05:00.809286196 +0100
+@@ -113,6 +113,11 @@
+ 					       ip6_dst_idev(&rt->dst)->dev,
+ 					       &flp6->daddr,
+ 					       rt6_flags2srcprefs(flags),
++#ifdef	CONFIG_NETPVD
++					       (flags & RT6_LOOKUP_F_PVD) ? rt->rt6i_pvd : NULL,
++#else
++					       NULL,
++#endif
+ 					       &saddr))
+ 				goto again;
+ 			if (!ipv6_prefix_equal(&saddr, &r->src.addr,
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c ubuntu-4.10.0/net/ipv6/ip6_fib.c
 --- ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c	2017-08-10 11:05:24.289046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/ip6_fib.c	2017-07-18 14:25:07.415522851 +0100
-@@ -37,6 +37,10 @@
++++ ubuntu-4.10.0/net/ipv6/ip6_fib.c	2017-10-08 17:05:07.737286229 +0100
+@@ -24,6 +24,7 @@
+ #include <linux/net.h>
+ #include <linux/route.h>
+ #include <linux/netdevice.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/init.h>
+ #include <linux/list.h>
+@@ -37,6 +38,10 @@
  #include <net/ip6_fib.h>
  #include <net/ip6_route.h>
  
@@ -3951,7 +4231,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c ubuntu-4.10.
  #define RT6_DEBUG 2
  
  #if RT6_DEBUG >= 3
-@@ -1960,10 +1964,21 @@
+@@ -1960,10 +1965,21 @@
  	else
  		seq_puts(seq, "00000000000000000000000000000000");
  
@@ -3975,10 +4255,53 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_fib.c ubuntu-4.10.
  	iter->w.leaf = NULL;
  	return 0;
  }
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/net/ipv6/ndisc.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_output.c ubuntu-4.10.0/net/ipv6/ip6_output.c
+--- ubuntu-4.10.0-orig/net/ipv6/ip6_output.c	2017-07-18 14:06:22.455542997 +0100
++++ ubuntu-4.10.0/net/ipv6/ip6_output.c	2017-10-08 17:05:35.045286361 +0100
+@@ -33,6 +33,7 @@
+ #include <linux/net.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_arp.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/tcp.h>
+ #include <linux/route.h>
+@@ -962,6 +963,11 @@
+ 		rt = (*dst)->error ? NULL : (struct rt6_info *)*dst;
+ 		err = ip6_route_get_saddr(net, rt, &fl6->daddr,
+ 					  sk ? inet6_sk(sk)->srcprefs : 0,
++#ifdef	CONFIG_NETPVD
++					  fl6->pvd,
++#else
++					  NULL,
++#endif
+ 					  &fl6->saddr);
+ 		if (err)
+ 			goto out_err_release;
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ip6_tunnel.c ubuntu-4.10.0/net/ipv6/ip6_tunnel.c
+--- ubuntu-4.10.0-orig/net/ipv6/ip6_tunnel.c	2017-07-18 14:06:22.455542997 +0100
++++ ubuntu-4.10.0/net/ipv6/ip6_tunnel.c	2017-10-08 17:06:14.093286550 +0100
+@@ -1107,7 +1107,7 @@
+ 		}
+ 		if (t->parms.collect_md &&
+ 		    ipv6_dev_get_saddr(net, ip6_dst_idev(dst)->dev,
+-				       &fl6->daddr, 0, &fl6->saddr))
++				       &fl6->daddr, 0, /* pvd */ NULL, &fl6->saddr))
+ 			goto tx_err_link_failure;
+ 		ndst = dst;
+ 	}
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/net/ipv6/ndisc.c
 --- ubuntu-4.10.0-orig/net/ipv6/ndisc.c	2017-08-10 11:05:24.293046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/ndisc.c	2017-08-28 19:07:29.832187061 +0100
-@@ -44,6 +44,9 @@
++++ ubuntu-4.10.0/net/ipv6/ndisc.c	2017-10-08 17:08:14.629287133 +0100
+@@ -36,6 +36,7 @@
+ #include <linux/sockios.h>
+ #include <linux/sched.h>
+ #include <linux/net.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/route.h>
+ #include <linux/init.h>
+@@ -44,6 +45,9 @@
  #ifdef CONFIG_SYSCTL
  #include <linux/sysctl.h>
  #endif
@@ -3988,7 +4311,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  
  #include <linux/if_addr.h>
  #include <linux/if_arp.h>
-@@ -61,6 +64,10 @@
+@@ -61,6 +65,10 @@
  #include <net/addrconf.h>
  #include <net/icmp.h>
  
@@ -3999,29 +4322,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  #include <net/netlink.h>
  #include <linux/rtnetlink.h>
  
-@@ -140,6 +147,21 @@
- };
- EXPORT_SYMBOL_GPL(nd_tbl);
- 
-+static char *addrtostr(struct in6_addr const *addr, char *str)
-+{
-+	sprintf(str,
-+		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-+		addr->s6_addr[0], addr->s6_addr[1],
-+		addr->s6_addr[2], addr->s6_addr[3],
-+		addr->s6_addr[4], addr->s6_addr[5],
-+		addr->s6_addr[6], addr->s6_addr[7],
-+		addr->s6_addr[8], addr->s6_addr[9],
-+		addr->s6_addr[10], addr->s6_addr[11],
-+		addr->s6_addr[12], addr->s6_addr[13],
-+		addr->s6_addr[14], addr->s6_addr[15]);
-+	return(str);
-+}
-+
- void __ndisc_fill_addr_option(struct sk_buff *skb, int type, void *data,
- 			      int data_len, int pad)
- {
-@@ -211,6 +233,50 @@
+@@ -211,6 +219,46 @@
  	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
  }
  
@@ -4033,8 +4334,6 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +	int l = nd_opt->nd_opt_len << 3;
 +	int pvdname_len = l - sizeof(struct nd_opt_pvdid);
 +	struct nd_opt_pvdid *pvd = (struct nd_opt_pvdid *) nd_opt;
-+
-+	printk("pvdid_parse_opt called\n");
 +
 +	if (l < sizeof(struct nd_opt_pvdid)) {
 +		printk("Invalid nd_opt_pvdid size (%d, expected at least %d)\n",
@@ -4063,8 +4362,6 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +	ndopts->pvd_l_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 14) & 0x01;
 +	ndopts->pvd_sequence_number = ntohs(pvd->nd_opt_pvdid_sequence_number);
 +
-+	printk("Correct nd_opt_pvdid option (%s)\n", ndopts->pvdname);
-+
 +	return 0;
 +}
 +#endif
@@ -4072,19 +4369,17 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  					  u8 *opt, int opt_len,
  					  struct ndisc_options *ndopts)
-@@ -255,6 +321,19 @@
+@@ -255,6 +303,17 @@
  				ndopts->nd_opts_ri = nd_opt;
  			break;
  #endif
 +#ifdef	CONFIG_NETPVD
 +		case ND_OPT_PVDID:
-+			printk("ND_OPT_PVDID option found in RA\n");
 +			if (ndopts->nd_opt_pvdid) {
 +				ND_PRINTK(2, warn,
 +					"%s: duplicated PVD option found. Ignored\n",
 +					__func__);
-+			} else
-+			if (pvdid_parse_opt(nd_opt, ndopts) == 0) {
++			} else if (pvdid_parse_opt(nd_opt, ndopts) == 0) {
 +				ndopts->nd_opt_pvdid = nd_opt;
 +			}
 +			break;
@@ -4092,11 +4387,18 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		default:
  			if (ndisc_is_useropt(dev, nd_opt)) {
  				ndopts->nd_useropts_end = nd_opt;
-@@ -1149,9 +1228,17 @@
+@@ -513,6 +572,7 @@
+ 	} else {
+ 		if (ipv6_dev_get_saddr(dev_net(dev), dev, daddr,
+ 				       inet6_sk(dev_net(dev)->ipv6.ndisc_sk)->srcprefs,
++				       /* pvd */ NULL,
+ 				       &tmpaddr))
+ 			return;
+ 		src_addr = &tmpaddr;
+@@ -1149,6 +1209,11 @@
  	unsigned int pref = 0;
  	__u32 old_if_flags;
  	bool send_ifinfo_notify = false;
-+	int ra_len = skb_tail_pointer(skb) - skb_transport_header(skb);
 +#ifdef	CONFIG_NETPVD
 +	struct net_pvd *pvd = NULL;
 +#else
@@ -4105,12 +4407,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  
  	__u8 *opt = (__u8 *)(ra_msg + 1);
  
-+	printk("ndisc_router_discovery : ra_len = %d\n", ra_len);
-+
- 	optlen = (skb_tail_pointer(skb) - skb_transport_header(skb)) -
- 		sizeof(struct ra_msg);
- 
-@@ -1190,6 +1277,55 @@
+@@ -1190,6 +1255,55 @@
  		return;
  	}
  
@@ -4126,9 +4423,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +	 * + the incoming device (skb->dev)
 +	 * + and of course the pvd name
 +	 */
-+	printk("Checking nd_opt_pvdid options\n");
 +	if (ndopts.nd_opt_pvdid) {
-+		printk("Some nd_opt_pvdid options\n");
 +		if ((pvd = register_pvd(
 +				dev_net(skb->dev),
 +				ndopts.pvdname,
@@ -4151,7 +4446,9 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +		pvd->sequence_number = ndopts.pvd_sequence_number;
 +	}
 +	else {
-+		printk("No nd_opt_pvdid options. Creating implicit pvd\n");
++		/*
++		 * No nd_opt_pvdid options. Creating implicit pvd
++		 */
 +		if ((pvd = register_pvd(
 +				dev_net(skb->dev),
 +				NULL,
@@ -4166,16 +4463,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  	if (!ipv6_accept_ra(in6_dev)) {
  		ND_PRINTK(2, info,
  			  "RA: %s, did not accept ra for dev: %s\n",
-@@ -1261,6 +1397,8 @@
- 
- 	rt = rt6_get_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev);
- 
-+	printk("ndisc_router_discovery : rt6_get_dflt_router => rt = %p\n", rt);
-+
- 	if (rt) {
- 		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
- 		if (!neigh) {
-@@ -1268,7 +1406,7 @@
+@@ -1268,7 +1382,7 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -4184,12 +4472,10 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  	}
  	if (rt && lifetime == 0) {
-@@ -1282,11 +1420,14 @@
+@@ -1282,11 +1396,12 @@
  		ND_PRINTK(3, info, "RA: adding default router\n");
  
  		rt = rt6_add_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev, pref);
-+
-+		printk("ndisc_router_discovery : rt6_add_dflt_router => rt = %p\n", rt);
 +
  		if (!rt) {
  			ND_PRINTK(0, err,
@@ -4200,7 +4486,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1295,13 +1436,21 @@
+@@ -1295,13 +1410,21 @@
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -4217,27 +4503,13 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +	 * Make sure this default route is linked to the pvd
 +	 */
 +	if (rt)
-+		pvd_migrate_route(pvd, rt, __func__);
++		pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1410,6 +1559,13 @@
- 		     p;
- 		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
- 			struct route_info *ri = (struct route_info *)p;
-+			/* T.DANIS */
-+			if (ri->length == 3) {
-+				char sAddr[64];
-+				addrtostr((struct in6_addr *) ri->prefix, sAddr);
-+				printk("route_info : %s\n", sAddr);
-+			}
-+			/* ! T.DANIS */
- #ifdef CONFIG_IPV6_NDISC_NODETYPE
- 			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
- 			    ri->prefix_len == 0)
-@@ -1421,7 +1577,8 @@
+@@ -1421,7 +1544,8 @@
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -4247,7 +4519,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  	}
  
-@@ -1445,7 +1602,8 @@
+@@ -1445,7 +1569,8 @@
  		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
@@ -4257,7 +4529,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  		}
  	}
  
-@@ -1481,10 +1639,55 @@
+@@ -1481,10 +1606,54 @@
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
@@ -4289,8 +4561,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
 +					    ndopts.nd_useropts_end)) {
 +			if (p->nd_opt_type == ND_OPT_RDNSS) {
 +				pvd_register_rdnss(pvd, p);
-+			} else
-+			if (p->nd_opt_type == ND_OPT_DNSSL) {
++			} else if (p->nd_opt_type == ND_OPT_DNSSL) {
 +				pvd_register_dnssl(pvd, p);
 +			}
 +		}
@@ -4313,42 +4584,144 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/ndisc.c ubuntu-4.10.0/
  }
  
  static void ndisc_redirect_rcv(struct sk_buff *skb)
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/net/ipv6/route.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c ubuntu-4.10.0/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c
+--- ubuntu-4.10.0-orig/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c	2017-07-18 14:06:22.455542997 +0100
++++ ubuntu-4.10.0/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c	2017-10-08 17:00:02.337284753 +0100
+@@ -39,7 +39,8 @@
+ 			    ctinfo == IP_CT_RELATED_REPLY));
+ 
+ 	if (ipv6_dev_get_saddr(nf_ct_net(ct), out,
+-			       &ipv6_hdr(skb)->daddr, 0, &src) < 0)
++			       &ipv6_hdr(skb)->daddr, 0,
++			       /* pvd */ NULL, &src) < 0)
+ 		return NF_DROP;
+ 
+ 	nfct_nat(ct)->masq_index = out->ifindex;
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/net/ipv6/route.c
 --- ubuntu-4.10.0-orig/net/ipv6/route.c	2017-08-10 11:05:24.293046482 +0100
-+++ ubuntu-4.10.0/net/ipv6/route.c	2017-07-31 09:21:41.712597096 +0100
-@@ -118,6 +118,20 @@
- 
- static DEFINE_PER_CPU_ALIGNED(struct uncached_list, rt6_uncached_list);
- 
-+static void addrtostr(struct in6_addr const *addr, char *str)
-+{
-+	sprintf(str,
-+		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-+		addr->s6_addr[0], addr->s6_addr[1],
-+		addr->s6_addr[2], addr->s6_addr[3],
-+		addr->s6_addr[4], addr->s6_addr[5],
-+		addr->s6_addr[6], addr->s6_addr[7],
-+		addr->s6_addr[8], addr->s6_addr[9],
-+		addr->s6_addr[10], addr->s6_addr[11],
-+		addr->s6_addr[12], addr->s6_addr[13],
-+		addr->s6_addr[14], addr->s6_addr[15]);
-+}
-+
- static void rt6_uncached_list_add(struct rt6_info *rt)
- {
- 	struct uncached_list *ul = raw_cpu_ptr(&rt6_uncached_list);
-@@ -385,6 +399,10 @@
++++ ubuntu-4.10.0/net/ipv6/route.c	2017-10-08 17:11:53.801288192 +0100
+@@ -36,6 +36,7 @@
+ #include <linux/net.h>
+ #include <linux/route.h>
+ #include <linux/netdevice.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/mroute6.h>
+ #include <linux/init.h>
+@@ -385,6 +386,10 @@
  	}
  
  	dst->from = NULL;
 +
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(NULL, rt, __func__);
++	pvd_migrate_route(NULL, rt);
 +#endif
  	dst_release(from);
  }
  
-@@ -758,7 +776,8 @@
+@@ -464,12 +469,17 @@
+ 
+ /*
+  *	Route lookup. Any table->tb6_lock is implied.
++ *
++ *	We also perform a pvd lookup here : the selected route must
++ *	match both the iface and the pvd. Loopback routes match any
++ *	pvd
+  */
+ 
+ static inline struct rt6_info *rt6_device_match(struct net *net,
+ 						    struct rt6_info *rt,
+ 						    const struct in6_addr *saddr,
+ 						    int oif,
++						    void *pvd,
+ 						    int flags)
+ {
+ 	struct rt6_info *local = NULL;
+@@ -481,6 +491,19 @@
+ 	for (sprt = rt; sprt; sprt = sprt->dst.rt6_next) {
+ 		struct net_device *dev = sprt->dst.dev;
+ 
++#ifdef	CONFIG_NETPVD
++		printk("rt6_device_match called (pvd = %p)\n", pvd);
++		if (flags & RT6_LOOKUP_F_PVD) {
++			printk("rt6_device_match  : RT6_LOOKUP_F_PVD requested\n");
++			if (! (dev->flags & IFF_LOOPBACK) &&
++					sprt->rt6i_pvd != pvd) {
++				printk("rt6_device_match : dont match (loopback = %s, rtpvd = %p)\n",
++					(dev->flags & IFF_LOOPBACK) ? "true" : "false",
++					sprt->rt6i_pvd);
++				continue;
++			}
++		}
++#endif
+ 		if (oif) {
+ 			if (dev->ifindex == oif)
+ 				return sprt;
+@@ -688,7 +711,7 @@
+ 
+ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 				     struct rt6_info *rr_head,
+-				     u32 metric, int oif, int strict,
++				     u32 metric, int oif, void *pvd, int strict,
+ 				     bool *do_rr)
+ {
+ 	struct rt6_info *rt, *match, *cont;
+@@ -697,6 +720,11 @@
+ 	match = NULL;
+ 	cont = NULL;
+ 	for (rt = rr_head; rt; rt = rt->dst.rt6_next) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		if (rt->rt6i_metric != metric) {
+ 			cont = rt;
+ 			break;
+@@ -706,6 +734,11 @@
+ 	}
+ 
+ 	for (rt = fn->leaf; rt && rt != rr_head; rt = rt->dst.rt6_next) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		if (rt->rt6i_metric != metric) {
+ 			cont = rt;
+ 			break;
+@@ -717,13 +750,19 @@
+ 	if (match || !cont)
+ 		return match;
+ 
+-	for (rt = cont; rt; rt = rt->dst.rt6_next)
++	for (rt = cont; rt; rt = rt->dst.rt6_next) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		match = find_match(rt, oif, strict, &mpri, match, do_rr);
++	}
+ 
+ 	return match;
+ }
+ 
+-static struct rt6_info *rt6_select(struct fib6_node *fn, int oif, int strict)
++static struct rt6_info *rt6_select(struct fib6_node *fn, int oif, void *pvd, int strict)
+ {
+ 	struct rt6_info *match, *rt0;
+ 	struct net *net;
+@@ -733,7 +772,7 @@
+ 	if (!rt0)
+ 		fn->rr_ptr = rt0 = fn->leaf;
+ 
+-	match = find_rr_leaf(fn, rt0, rt0->rt6i_metric, oif, strict,
++	match = find_rr_leaf(fn, rt0, rt0->rt6i_metric, oif, pvd, strict,
+ 			     &do_rr);
+ 
+ 	if (do_rr) {
+@@ -758,7 +797,8 @@
  
  #ifdef CONFIG_IPV6_ROUTE_INFO
  int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
@@ -4358,55 +4731,89 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  {
  	struct net *net = dev_net(dev);
  	struct route_info *rinfo = (struct route_info *) opt;
-@@ -767,6 +786,16 @@
+@@ -767,6 +807,11 @@
  	unsigned long lifetime;
  	struct rt6_info *rt;
  
-+	/* T.DANIS */
-+	printk("rt6_route_rcv called (pvd %s)\n",
 +#ifdef CONFIG_NETPVD
-+		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>"
-+#else
-+		"<no pvd>"
++	printk("rt6_route_rcv called (pvd %s)\n",
++		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
 +#endif
-+	      );
-+	/* ! T.DANIS */
 +
  	if (len < sizeof(struct route_info)) {
  		return -EINVAL;
  	}
-@@ -802,6 +831,14 @@
+@@ -802,6 +847,14 @@
  		prefix = &prefix_buf;
  	}
  
-+	/* T.DANIS */
++#ifdef	CONFIG_NETPVD
 +	{
 +		char sAddr[64];
-+		addrtostr(prefix, sAddr);
-+		printk("rt6_route_rcv : route = %s\n", sAddr);
++		printk("rt6_route_rcv : route = %s\n",
++			prefix ? addr6tostr(prefix->s6_addr, sAddr) : "<no prefix>");
 +	}
-+	/* ! T.DANIS */
++#endif
 +
  	if (rinfo->prefix_len == 0)
  		rt = rt6_get_dflt_router(gwaddr, dev);
  	else
-@@ -820,6 +857,10 @@
+@@ -820,6 +873,10 @@
  		rt->rt6i_flags = RTF_ROUTEINFO |
  				 (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(pvd, rt, __func__);
++	pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt) {
  		if (!addrconf_finite_timeout(lifetime))
  			rt6_clean_expires(rt);
-@@ -1210,6 +1251,12 @@
+@@ -855,12 +912,16 @@
+ {
+ 	struct fib6_node *fn;
+ 	struct rt6_info *rt;
++	void *pvd = NULL;
+ 
+ 	read_lock_bh(&table->tb6_lock);
+ 	fn = fib6_lookup(&table->tb6_root, &fl6->daddr, &fl6->saddr);
+ restart:
+ 	rt = fn->leaf;
+-	rt = rt6_device_match(net, rt, &fl6->saddr, fl6->flowi6_oif, flags);
++#ifdef	CONFIG_NETPVD
++	pvd = fl6->pvd;
++#endif
++	rt = rt6_device_match(net, rt, &fl6->saddr, fl6->flowi6_oif, pvd, flags);
+ 	if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
+ 		rt = rt6_multipath_select(rt, fl6, fl6->flowi6_oif, flags);
+ 	if (rt == net->ipv6.ip6_null_entry) {
+@@ -1051,6 +1112,7 @@
+ 	struct fib6_node *fn, *saved_fn;
+ 	struct rt6_info *rt;
+ 	int strict = 0;
++	void *pvd = NULL;
+ 
+ 	strict |= flags & RT6_LOOKUP_F_IFACE;
+ 	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
+@@ -1065,8 +1127,11 @@
+ 	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
+ 		oif = 0;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd = fl6->pvd;
++#endif
+ redo_rt6_select:
+-	rt = rt6_select(fn, oif, strict);
++	rt = rt6_select(fn, oif, pvd, strict);
+ 	if (rt->rt6i_nsiblings)
+ 		rt = rt6_multipath_select(rt, fl6, oif, strict);
+ 	if (rt == net->ipv6.ip6_null_entry) {
+@@ -1210,6 +1275,12 @@
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
 +#ifdef	CONFIG_NETPVD
-+	if (sk && sk->sk_n_bound_pvd > 0) {
++	if (sk && sk->sk_pvd_bind_type == PVD_BIND_ONEPVD && fl6->pvd) {
 +		flags |= RT6_LOOKUP_F_PVD;
 +	}
 +#endif
@@ -4414,21 +4821,12 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -1821,7 +1868,7 @@
- 	return rt;
- }
- 
--static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg)
-+static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg, const char *caller)
- {
- 	struct net *net = cfg->fc_nlinfo.nl_net;
- 	struct rt6_info *rt = NULL;
-@@ -2076,25 +2123,34 @@
+@@ -2076,12 +2147,21 @@
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(cfg->fc_pvd, rt, caller);
++	pvd_migrate_route(cfg->fc_pvd, rt);
 +#endif
 +
  	return rt;
@@ -4439,111 +4837,13 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  		in6_dev_put(idev);
 +
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(NULL, rt, caller);	/* deassociate rt and its pvd */
++	pvd_migrate_route(NULL, rt);	/* deassociate rt and its pvd */
 +#endif
 +
  	if (rt)
  		dst_free(&rt->dst);
  
- 	return ERR_PTR(err);
- }
- 
--int ip6_route_add(struct fib6_config *cfg)
-+int ip6_route_add(struct fib6_config *cfg, const char *caller)
- {
- 	struct mx6_config mxc = { .mx = NULL, };
- 	struct rt6_info *rt;
- 	int err;
- 
--	rt = ip6_route_info_create(cfg);
-+	rt = ip6_route_info_create(cfg, caller);
- 	if (IS_ERR(rt)) {
- 		err = PTR_ERR(rt);
- 		rt = NULL;
-@@ -2147,6 +2203,82 @@
- 	return __ip6_del_rt(rt, &info);
- }
- 
-+#if	0
-+#ifdef	CONFIG_NETPVD
-+static void rtmsg_to_fib6_config(struct net *net,
-+				 struct in6_rtmsg *rtmsg,
-+				 struct fib6_config *cfg);
-+int ip6_route_pvd_attach(
-+		struct sock *sk,
-+		char __user *optval,
-+		int optlen)
-+{
-+	struct net *net = sock_net(sk);
-+	struct fib6_config _cfg, *cfg = &_cfg;
-+	struct in6_rt_pvdmsg rt_pvdmsg;
-+	struct fib6_table *table;
-+	struct fib6_node *fn;
-+	struct rt6_info *rt;
-+	int err = -ESRCH;
-+	struct net_pvd *pvd;
-+
-+	if (! ns_capable(net->user_ns, CAP_NET_ADMIN))
-+		return -EPERM;
-+
-+	if (optlen != sizeof(struct in6_rt_pvdmsg)) {
-+		return -EINVAL;
-+	}
-+
-+	if (copy_from_user(&rt_pvdmsg, optval, optlen)) {
-+		return -EFAULT;
-+	}
-+
-+	rtmsg_to_fib6_config(net, &rt_pvdmsg.rtmsg, cfg);
-+
-+	if (rt_pvdmsg.pvdname[0] == '\0') {
-+		cfg->fc_pvd = NULL;
-+	} else
-+	if ((cfg->fc_pvd = pvd_get_by_name(net, rt_pvdmsg.pvdname, NULL, NULL)) == NULL)
-+		return -ESRCH;
-+
-+	table = fib6_get_table(cfg->fc_nlinfo.nl_net, cfg->fc_table);
-+	if (!table)
-+		return err;
-+
-+	read_lock_bh(&table->tb6_lock);
-+
-+	fn = fib6_locate(&table->tb6_root,
-+			 &cfg->fc_dst, cfg->fc_dst_len,
-+			 &cfg->fc_src, cfg->fc_src_len);
-+
-+	if (fn) {
-+		for (rt = fn->leaf; rt; rt = rt->dst.rt6_next) {
-+			if ((rt->rt6i_flags & RTF_CACHE) &&
-+			    !(cfg->fc_flags & RTF_CACHE))
-+				continue;
-+			if (cfg->fc_ifindex &&
-+			    (!rt->dst.dev ||
-+			     rt->dst.dev->ifindex != cfg->fc_ifindex))
-+				continue;
-+			if (cfg->fc_flags & RTF_GATEWAY &&
-+			    !ipv6_addr_equal(&cfg->fc_gateway, &rt->rt6i_gateway))
-+				continue;
-+			if (cfg->fc_metric && cfg->fc_metric != rt->rt6i_metric)
-+				continue;
-+			if (cfg->fc_protocol && cfg->fc_protocol != rt->rt6i_protocol)
-+				continue;
-+			read_unlock_bh(&table->tb6_lock);
-+
-+			return pvd_migrate_route(pvd, rt, __func__) == 0 ? 0 : -EINVAL;
-+		}
-+	}
-+	read_unlock_bh(&table->tb6_lock);
-+
-+	return err;
-+}
-+#endif		/* CONFIG_NETPVD */
-+#endif
-+
- static int ip6_route_del(struct fib6_config *cfg)
- {
- 	struct fib6_table *table;
-@@ -2399,18 +2531,23 @@
+@@ -2399,6 +2479,9 @@
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -4553,12 +4853,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  
  	/* We should treat it as a default route if prefix length is 0. */
  	if (!prefixlen)
- 		cfg.fc_flags |= RTF_DEFAULT;
- 
--	ip6_route_add(&cfg);
-+	ip6_route_add(&cfg, __func__);
- 
- 	return rt6_get_route_info(net, prefix, prefixlen, gwaddr, dev);
+@@ -2410,7 +2493,9 @@
  }
  #endif
  
@@ -4569,7 +4864,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  {
  	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
  	struct rt6_info *rt;
-@@ -2430,6 +2567,7 @@
+@@ -2430,6 +2515,7 @@
  	if (rt)
  		dst_hold(&rt->dst);
  	read_unlock_bh(&table->tb6_lock);
@@ -4577,7 +4872,7 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  	return rt;
  }
  
-@@ -2449,8 +2587,11 @@
+@@ -2449,6 +2535,9 @@
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -4585,57 +4880,39 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
 +	cfg.fc_pvd = NULL;
 +#endif
  
--	if (!ip6_route_add(&cfg)) {
-+	if (!ip6_route_add(&cfg, __func__)) {
+ 	if (!ip6_route_add(&cfg)) {
  		struct fib6_table *table;
- 
- 		table = fib6_get_table(dev_net(dev), cfg.fc_table);
-@@ -2543,7 +2684,7 @@
- 		rtnl_lock();
- 		switch (cmd) {
- 		case SIOCADDRT:
--			err = ip6_route_add(&cfg);
-+			err = ip6_route_add(&cfg, __func__);
- 			break;
- 		case SIOCDELRT:
- 			err = ip6_route_del(&cfg);
-@@ -2614,7 +2755,9 @@
+@@ -2614,6 +2703,7 @@
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
--				    bool anycast)
 +				    void *pvd,
-+				    bool anycast,
-+				    const char *caller)
+ 				    bool anycast)
  {
  	u32 tb_id;
- 	struct net *net = dev_net(idev->dev);
-@@ -2637,6 +2780,9 @@
+@@ -2637,6 +2727,9 @@
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_route(pvd, rt, caller);
++	pvd_migrate_route(pvd, rt);
 +#endif
  
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
  	if (anycast)
-@@ -2926,6 +3072,29 @@
+@@ -2926,6 +3019,26 @@
  			goto errout;
  	}
  
 +#ifdef	CONFIG_NETPVD
 +	if (tb[RTA_PVD]) {
-+		printk("RTA_PVD : len = %d\n", nla_len(tb[RTA_PVD]));
-+
 +		if (nla_len(tb[RTA_PVD]) > PVDNAMSIZ) {
 +			err = -EINVAL;
 +			goto errout;
 +		}
 +		if (nla_len(tb[RTA_PVD]) == 0) {
 +			cfg->fc_pvd = NULL;
-+		} else
-+		if ((cfg->fc_pvd = 
++		} else if ((cfg->fc_pvd = 
 +				pvd_get_by_name(
 +					sock_net(skb->sk),
 +					nla_data(tb[RTA_PVD]),
@@ -4650,25 +4927,16 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -3032,7 +3201,7 @@
- 				r_cfg.fc_encap_type = nla_get_u16(nla);
- 		}
- 
--		rt = ip6_route_info_create(&r_cfg);
-+		rt = ip6_route_info_create(&r_cfg, __func__);
- 		if (IS_ERR(rt)) {
- 			err = PTR_ERR(rt);
- 			rt = NULL;
-@@ -3158,7 +3327,7 @@
- 	if (cfg.fc_mp)
- 		return ip6_route_multipath_add(&cfg);
- 	else
--		return ip6_route_add(&cfg);
-+		return ip6_route_add(&cfg, __func__);
- }
- 
- static inline size_t rt6_nlmsg_size(struct rt6_info *rt)
-@@ -3334,6 +3503,22 @@
+@@ -3294,7 +3407,7 @@
+ 				goto nla_put_failure;
+ 	} else if (dst) {
+ 		struct in6_addr saddr_buf;
+-		if (ip6_route_get_saddr(net, rt, dst, 0, &saddr_buf) == 0 &&
++		if (ip6_route_get_saddr(net, rt, dst, 0, /* pvd */ NULL, &saddr_buf) == 0 &&
+ 		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
+ 			goto nla_put_failure;
+ 	}
+@@ -3334,6 +3447,18 @@
  	if (lwtunnel_fill_encap(skb, rt->dst.lwtstate) < 0)
  		goto nla_put_failure;
  
@@ -4678,12 +4946,8 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
 +		char *pvdname = pvd->name;
 +
 +		if (! pvd->implicit_flag) {
-+			printk("Route associated to pvd %s\n", pvdname);
-+
 +			if (nla_put(skb, RTA_PVD, strlen(pvdname) + 1, pvdname))
 +				goto nla_put_failure;
-+
-+			printk("RTA_PVD pushed on skb\n");
 +		}
 +	}
 +#endif
@@ -4691,7 +4955,161 @@ diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/route.c ubuntu-4.10.0/
  	nlmsg_end(skb, nlh);
  	return 0;
  
-diff -Naur -X DiffNaurExclude ubuntu-4.10.0-orig/security/selinux/nlmsgtab.c ubuntu-4.10.0/security/selinux/nlmsgtab.c
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/seg6_iptunnel.c ubuntu-4.10.0/net/ipv6/seg6_iptunnel.c
+--- ubuntu-4.10.0-orig/net/ipv6/seg6_iptunnel.c	2017-07-18 14:06:22.459542997 +0100
++++ ubuntu-4.10.0/net/ipv6/seg6_iptunnel.c	2017-10-08 17:12:01.089288227 +0100
+@@ -88,6 +88,7 @@
+ 		memcpy(saddr, tun_src, sizeof(struct in6_addr));
+ 	} else {
+ 		ipv6_dev_get_saddr(net, dev, daddr, IPV6_PREFER_SRC_PUBLIC,
++				   /* pvd */ NULL,
+ 				   saddr);
+ 	}
+ 
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/tcp_ipv6.c ubuntu-4.10.0/net/ipv6/tcp_ipv6.c
+--- ubuntu-4.10.0-orig/net/ipv6/tcp_ipv6.c	2017-07-18 14:06:22.459542997 +0100
++++ ubuntu-4.10.0/net/ipv6/tcp_ipv6.c	2017-10-08 17:12:23.957288338 +0100
+@@ -31,6 +31,7 @@
+ #include <linux/sockios.h>
+ #include <linux/net.h>
+ #include <linux/jiffies.h>
++#include <linux/inet.h>
+ #include <linux/in.h>
+ #include <linux/in6.h>
+ #include <linux/netdevice.h>
+@@ -239,6 +240,17 @@
+ 	fl6.fl6_dport = usin->sin6_port;
+ 	fl6.fl6_sport = inet->inet_sport;
+ 	fl6.flowi6_uid = sk->sk_uid;
++#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection of the connect() process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		goto failure;
++	}
++#endif
+ 
+ 	opt = rcu_dereference_protected(np->opt, lockdep_sock_is_held(sk));
+ 	final_p = fl6_update_dst(&fl6, opt, &final);
+@@ -295,6 +307,10 @@
+ 	if (err)
+ 		goto late_failure;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return 0;
+ 
+ late_failure:
+@@ -303,6 +319,11 @@
+ failure:
+ 	inet->inet_dport = 0;
+ 	sk->sk_route_caps = 0;
++
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return err;
+ }
+ 
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/udp.c ubuntu-4.10.0/net/ipv6/udp.c
+--- ubuntu-4.10.0-orig/net/ipv6/udp.c	2017-07-18 14:06:22.459542997 +0100
++++ ubuntu-4.10.0/net/ipv6/udp.c	2017-10-08 17:13:13.725288578 +0100
+@@ -1019,6 +1019,10 @@
+ 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
+ 	struct sockcm_cookie sockc;
+ 
++#ifdef	CONFIG_NETPVD
++	fl6.pvd = NULL;
++#endif
++
+ 	ipc6.hlimit = -1;
+ 	ipc6.tclass = -1;
+ 	ipc6.dontfrag = -1;
+@@ -1148,6 +1152,20 @@
+ 	fl6.flowi6_mark = sk->sk_mark;
+ 	fl6.flowi6_uid = sk->sk_uid;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		return err;
++	}
++	/* printk("udpv6_sendmsg : pvd %s selected\n",
++			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>"); */
++#endif
++
+ 	if (msg->msg_controllen) {
+ 		opt = &opt_space;
+ 		memset(opt, 0, sizeof(struct ipv6_txoptions));
+@@ -1157,12 +1175,19 @@
+ 		err = ip6_datagram_send_ctl(sock_net(sk), sk, msg, &fl6, &ipc6, &sockc);
+ 		if (err < 0) {
+ 			fl6_sock_release(flowlabel);
++#ifdef	CONFIG_NETPVD
++			pvd_put(fl6.pvd);
++#endif
+ 			return err;
+ 		}
+ 		if ((fl6.flowlabel&IPV6_FLOWLABEL_MASK) && !flowlabel) {
+ 			flowlabel = fl6_sock_lookup(sk, fl6.flowlabel);
+-			if (!flowlabel)
++			if (!flowlabel) {
++#ifdef	CONFIG_NETPVD
++				pvd_put(fl6.pvd);
++#endif
+ 				return -EINVAL;
++			}
+ 		}
+ 		if (!(opt->opt_nflen|opt->opt_flen))
+ 			opt = NULL;
+@@ -1280,6 +1305,10 @@
+ 	}
+ 
+ out:
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	dst_release(dst);
+ 	fl6_sock_release(flowlabel);
+ 	txopt_put(opt_to_free);
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/ipv6/xfrm6_policy.c ubuntu-4.10.0/net/ipv6/xfrm6_policy.c
+--- ubuntu-4.10.0-orig/net/ipv6/xfrm6_policy.c	2017-07-18 14:06:22.459542997 +0100
++++ ubuntu-4.10.0/net/ipv6/xfrm6_policy.c	2017-10-08 17:13:21.225288614 +0100
+@@ -64,7 +64,7 @@
+ 		return -EHOSTUNREACH;
+ 
+ 	dev = ip6_dst_idev(dst)->dev;
+-	ipv6_dev_get_saddr(dev_net(dev), dev, &daddr->in6, 0, &saddr->in6);
++	ipv6_dev_get_saddr(dev_net(dev), dev, &daddr->in6, 0, /* pvd */ NULL, &saddr->in6);
+ 	dst_release(dst);
+ 	return 0;
+ }
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/net/netfilter/ipvs/ip_vs_xmit.c ubuntu-4.10.0/net/netfilter/ipvs/ip_vs_xmit.c
+--- ubuntu-4.10.0-orig/net/netfilter/ipvs/ip_vs_xmit.c	2017-07-18 14:06:22.483542997 +0100
++++ ubuntu-4.10.0/net/netfilter/ipvs/ip_vs_xmit.c	2017-10-08 17:27:17.353292656 +0100
+@@ -432,7 +432,7 @@
+ 		return dst;
+ 	if (ipv6_addr_any(&fl6.saddr) &&
+ 	    ipv6_dev_get_saddr(net, ip6_dst_idev(dst)->dev,
+-			       &fl6.daddr, 0, &fl6.saddr) < 0)
++			       &fl6.daddr, 0, /* pvd */ NULL, &fl6.saddr) < 0)
+ 		goto out_err;
+ 	if (do_xfrm) {
+ 		dst = xfrm_lookup(net, dst, flowi6_to_flowi(&fl6), NULL, 0);
+diff -Naur -X pvd-linux-kernel-patch/DiffNaurExclude ubuntu-4.10.0-orig/security/selinux/nlmsgtab.c ubuntu-4.10.0/security/selinux/nlmsgtab.c
 --- ubuntu-4.10.0-orig/security/selinux/nlmsgtab.c	2017-08-10 11:05:24.293046482 +0100
 +++ ubuntu-4.10.0/security/selinux/nlmsgtab.c	2017-07-18 14:25:07.419522851 +0100
 @@ -78,6 +78,8 @@
