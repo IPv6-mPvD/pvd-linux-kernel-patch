@@ -8296,7 +8296,7 @@ index dbf0abba33b8..747978b37441 100644
  static inline int ip6_frag_mem(struct net *net)
  {
 diff --git a/include/net/ndisc.h b/include/net/ndisc.h
-index 8a0214654b6b..59066dfa6570 100644
+index 8a0214654b6b..f096e8566939 100644
 --- a/include/net/ndisc.h
 +++ b/include/net/ndisc.h
 @@ -37,6 +37,9 @@ enum {
@@ -8334,22 +8334,35 @@ index 8a0214654b6b..59066dfa6570 100644
  /* ND options */
  struct ndisc_options {
  	struct nd_opt_hdr *nd_opt_array[__ND_OPT_ARRAY_MAX];
-@@ -114,6 +128,14 @@ struct ndisc_options {
+@@ -114,7 +128,27 @@ struct ndisc_options {
  #if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
  	struct nd_opt_hdr *nd_802154_opt_array[ND_OPT_TARGET_LL_ADDR + 1];
  #endif
 +#ifdef	CONFIG_NETPVD
-+	struct nd_opt_hdr *nd_opt_pvdid;
++	struct nd_opt_hdr *nd_opt_pvdid;	
++#endif
++};
++
++#ifdef CONFIG_NETPVD
++/* datastruct for PvD option parsing */
++struct pvd_header {
 +	char pvdname[PVDNAMSIZ];
 +	int pvd_sequence_number;
 +	int pvd_h_flag;
 +	int pvd_l_flag;
-+	int pvd_a_flag;  /* introduced in draft 01, probably not needed for ndisc_options */
-+#endif
++	/* introduced in draft 01, when set in RA message, 
++	this variable indicates the offset in unit of byte 
++	to reach RA header from the beginning of the PvD option, i.e. nd_opt_pvdid */
++	int pvd_a_flag;
++	/* the offset in byte from the beginning of the PvD option to the next RA option 
++	helps skip PvD header and PvD ID (floating length) in option iterator */
++	int offset_to_opt;	
  };
++#endif
  
  #define nd_opts_src_lladdr		nd_opt_array[ND_OPT_SOURCE_LL_ADDR]
-@@ -215,7 +237,8 @@ struct ndisc_ops {
+ #define nd_opts_tgt_lladdr		nd_opt_array[ND_OPT_TARGET_LL_ADDR]
+@@ -215,7 +249,8 @@ struct ndisc_ops {
  				       int addr_type, u32 addr_flags,
  				       bool sllao, bool tokenized,
  				       __u32 valid_lft, u32 prefered_lft,
@@ -8359,7 +8372,7 @@ index 8a0214654b6b..59066dfa6570 100644
  };
  
  #if IS_ENABLED(CONFIG_IPV6)
-@@ -295,7 +318,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+@@ -295,7 +330,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
  						 bool sllao, bool tokenized,
  						 __u32 valid_lft,
  						 u32 prefered_lft,
@@ -8369,7 +8382,7 @@ index 8a0214654b6b..59066dfa6570 100644
  {
  	if (dev->ndisc_ops && dev->ndisc_ops->prefix_rcv_add_addr)
  		dev->ndisc_ops->prefix_rcv_add_addr(net, dev, pinfo, in6_dev,
-@@ -303,7 +327,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+@@ -303,7 +339,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
  						    addr_flags, sllao,
  						    tokenized, valid_lft,
  						    prefered_lft,
@@ -12472,7 +12485,7 @@ index a9692ec0cd6d..520bc1852bd8 100644
  		ndst = dst;
  	}
 diff --git a/net/ipv6/ndisc.c b/net/ipv6/ndisc.c
-index 7ebac630d3c6..bde92ece96dd 100644
+index 7ebac630d3c6..6798b14daa27 100644
 --- a/net/ipv6/ndisc.c
 +++ b/net/ipv6/ndisc.c
 @@ -36,6 +36,7 @@
@@ -12504,19 +12517,100 @@ index 7ebac630d3c6..bde92ece96dd 100644
  #include <net/netlink.h>
  #include <linux/rtnetlink.h>
  
-@@ -211,6 +219,145 @@ static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
- 	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
+@@ -178,6 +186,28 @@ static inline void ndisc_fill_redirect_addr_option(struct sk_buff *skb,
+ 	ndisc_ops_fill_redirect_addr_option(skb->dev, skb, ops_data);
  }
  
++#ifdef CONFIG_NETPVD
++static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
++											struct nd_opt_hdr *end,
++											bool parse_pvd,
++											int offset_in_pvd)
++{
++	int type;
++	if (!cur || ! end || cur >= end)
++		return NULL;
++	type = cur->nd_opt_type;
++	do {
++		cur = ((void *)cur) + (cur->nd_opt_len << 3);
++		/* if parse_pvd set to true and the current opt is of type PvD, 
++		jump to the next ND6 opt, the opt could be inside the PvD container */
++		if (parse_pvd && cur->nd_opt_type == ND_OPT_PVDID) {
++			cur = ((void *)cur) + offset_in_pvd;
++			printk("%s: jump inside pvd, opt type=%d", __func__, cur->nd_opt_type);
++		}
++	} while (cur < end && cur->nd_opt_type != type);
++	return (cur <= end && cur->nd_opt_type == type) ? cur : NULL;
++}
++#else
+ static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
+ 					    struct nd_opt_hdr *end)
+ {
+@@ -190,6 +220,7 @@ static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
+ 	} while (cur < end && cur->nd_opt_type != type);
+ 	return cur <= end && cur->nd_opt_type == type ? cur : NULL;
+ }
++#endif
+ 
+ static inline int ndisc_is_useropt(const struct net_device *dev,
+ 				   struct nd_opt_hdr *opt)
+@@ -199,6 +230,28 @@ static inline int ndisc_is_useropt(const struct net_device *dev,
+ 		ndisc_ops_is_useropt(dev, opt->nd_opt_type);
+ }
+ 
++#ifdef CONFIG_NETPVD
++static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
++											struct nd_opt_hdr *cur,
++											struct nd_opt_hdr *end,
++											bool parse_pvd,
++											int offset_in_pvd)
++{
++	int type;
++	if (!cur || ! end || cur >= end)
++		return NULL;
++	do {
++		cur = ((void *)cur) + (cur->nd_opt_len << 3);
++		/* if parse_pvd set to true and the current opt is of type PvD, 
++		jump to the next ND6 opt, the opt could be inside the PvD container */
++		if (parse_pvd && cur->nd_opt_type == ND_OPT_PVDID) {
++			cur = ((void *)cur) + offset_in_pvd;
++			printk("%s: jump inside pvd, opt type=%d", __func__, cur->nd_opt_type);
++		}
++	} while (cur < end && !ndisc_is_useropt(dev, cur));
++	return (cur <= end && ndisc_is_useropt(dev, cur)) ? cur : NULL;
++}
++#else
+ static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
+ 					     struct nd_opt_hdr *cur,
+ 					     struct nd_opt_hdr *end)
+@@ -210,6 +263,162 @@ static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
+ 	} while (cur < end && !ndisc_is_useropt(dev, cur));
+ 	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
+ }
++#endif
++
 +#ifdef	CONFIG_NETPVD
++/* 
++pvdid_parse_opt has two functionalities:
++1/ parse the PvD option header. Header information will be used to register/update correspinding PvD strucutre.
++2/ parse the ND6 options embeded inside the PvD option. As a result, it modifies the ND6 pointers in ndopts.
++
++The two steps are required at different steps of RA message parsing.
++PvD registeration (relies on step 1/) happens rather after the entire PvD parsing (step 2/).
++Yet, step 2/ relies on step 1/ to calculate the offset to the ND6 options inside the PvD.
++
++As a result this pvdid_parse_opt is actually called twice throughout the processing on an RA:
++first when parsing the options in RA (both step 1 and 2 are exectured, yet only the results of step2 is counted).
++once parsing is a success and sysctl options allows accepting ra and parse PvD, a PvD structure is prepared to be registered/updated.
++*/
 +static int pvdid_parse_opt(const struct net_device *dev,
-+		   struct nd_opt_hdr *nd_opt,
-+		   struct ndisc_options *ndopts)
++		   struct nd_opt_hdr *nd_opt,  // pointer to pvd option buffer area
++		   struct pvd_header *pvd_hdr,  // where pvd header info is stored after parsing
++		   struct ndisc_options *ndopts)  // parsing amends the ndopts structure already parsed
 +{
 +	int l = nd_opt->nd_opt_len << 3;
 +	struct nd_opt_pvdid *pvd = (struct nd_opt_pvdid *) nd_opt;
 +
-+	/* why not use ND_PRINTK */
 +	if (l < sizeof(struct nd_opt_pvdid)) {
 +		printk("Invalid nd_opt_pvdid size (%d, expected at least %d)\n",
 +			l,
@@ -12554,103 +12648,105 @@ index 7ebac630d3c6..bde92ece96dd 100644
 +		return -1;
 +	}
 +
-+	/* ndopts is only for nd options withib PvD option */
-+	memset(ndopts, 0, sizeof(*ndopts));
-+
-+	strncpy(ndopts->pvdname, pvd_name, strlen(pvd_name));
-+
-+	ndopts->pvd_h_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 15) & 0x01;
-+	ndopts->pvd_l_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 14) & 0x01;
-+	ndopts->pvd_a_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 13) & 0x01;
-+	ndopts->pvd_sequence_number = ntohs(pvd->nd_opt_pvdid_sequence_number);
++	int a_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 13) & 0x01;
 +
 +	/* skip the padding of PvD ID */
-+	offset += sizeof(struct nd_opt_pvdid);  /* counting the PvD header, where PvD ID stops*/
-+	int pvd_opt_offset = (offset + 8)/8 * 8;  /* calc the padding in PvD ID */
-+	/* if a_flag set, pvd_a_flag tells where the RA header starts, else set to 0 */
-+	ndopts->pvd_a_flag = (ndopts->pvd_a_flag == 0) ? 0 : pvd_opt_offset;
-+	u8 *nd_opt_in_pvd = ((u8 *)nd_opt) + pvd_opt_offset; 
-+	int len_opt_in_pvd = l - pvd_opt_offset;
++	offset += sizeof(struct nd_opt_pvdid);  /* counting the PvD header, where PvD ID stops */
++	offset = (offset + 8)/8 * 8;  /* calc the padding in PvD ID */
++	/* if a_flag set, store where the RA header starts, else set to 0 */
++	int ra_offset = (a_flag == 0) ? 0 : offset;
++	l -= offset;
 +
-+	/* skipp the RA header for now, troublesome to pass an additional struct ra_msg */
-+	if (ndopts->pvd_a_flag) {
-+		//printk("PvD %s has a-flag set, it is not handled in ND option parsing\n", pvd_name);
-+		nd_opt_in_pvd = nd_opt_in_pvd + sizeof(struct ra_msg);
-+		len_opt_in_pvd -= sizeof(struct ra_msg);
++	/* skip the ra header if present */
++	if (a_flag) {
++		l -= sizeof(struct ra_msg);
++		offset += sizeof(struct ra_msg);
 +	}
 +	
-+	/* parse the nd options in PvD */
-+	if (len_opt_in_pvd < sizeof(struct nd_opt_hdr)) {
-+		ND_PRINTK(2, info, "no valid ND6 option in PvD %s", pvd_name);
-+		return 0;
++	if (l < 0) {
++		printk("Negtive remaining length after removing PvD header and RA header (if a-flag set)\n");
++		return -1;
 +	}
 +
-+	while(len_opt_in_pvd) {
++	/* result of step1, if pvd_hdr present means the PvD header information is wanted */
++	if (pvd_hdr) {
++		memset(pvd_hdr, 0, sizeof(struct pvd_header));
++		strncpy(pvd_hdr->pvdname, pvd_name, strlen(pvd_name));
++		pvd_hdr->pvd_h_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 15) & 0x01;
++		pvd_hdr->pvd_l_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 14) & 0x01;
++		pvd_hdr->pvd_a_flag = ra_offset;
++		pvd_hdr->pvd_sequence_number = ntohs(pvd->nd_opt_pvdid_sequence_number);
++		pvd_hdr->offset_to_opt = offset;
++	}
++
++	/* actions for step2, it modifies the ndopts passed in as argument */
++	if (ndopts) {
++		u8 *nd_opt_in_pvd = ((u8 *)nd_opt) + offset;
++		
++		while(l) {
 +		struct nd_opt_hdr *nd_opt_temp = (struct nd_opt_hdr *)nd_opt_in_pvd;
 +		int opt_temp_len = nd_opt_temp->nd_opt_len << 3;
-+
-+		if (len_opt_in_pvd < opt_temp_len || opt_temp_len == 0) {
-+			printk("PvD %s has broken ND6 option, type=%d, len=%d, all remaining opt len=%d\n", 
-+					pvd_name, nd_opt_temp->nd_opt_type, nd_opt_temp->nd_opt_len, len_opt_in_pvd);
-+			return -1;  /* ignore the PvD with broken ND6 option */
++		
++		if (l < opt_temp_len || opt_temp_len == 0) {
++			printk("%s: PvD %s has broken Nd6 option: type=%d, len=%d\n", 
++				   __func__, pvd_name,
++				   nd_opt_temp->nd_opt_type,
++				   nd_opt_temp->nd_opt_len);
++			return -1;
 +		}
 +		
 +		/* device specific parser if any */
 +		if (ndisc_ops_parse_options(dev, nd_opt_temp, ndopts))
 +			goto pvd_next_opt;
 +
-+		switch (nd_opt_temp->nd_opt_type) {
-+			case ND_OPT_SOURCE_LL_ADDR:
-+			case ND_OPT_TARGET_LL_ADDR:
-+			case ND_OPT_MTU:
-+			case ND_OPT_NONCE:
-+			case ND_OPT_REDIRECT_HDR:
-+				if (ndopts->nd_opt_array[nd_opt_temp->nd_opt_type]) {
-+					ND_PRINTK(2, warn, 
-+					  "%s: duplicated ND6 option found in PvD %s: type=%d\n",
-+					  __func__, pvd_name, nd_opt_temp->nd_opt_type);
-+				} else {
++			switch (nd_opt_temp->nd_opt_type) {
++				case ND_OPT_SOURCE_LL_ADDR:
++				case ND_OPT_TARGET_LL_ADDR:
++				case ND_OPT_MTU:
++				case ND_OPT_NONCE:
++				case ND_OPT_REDIRECT_HDR:
++					if (ndopts->nd_opt_array[nd_opt_temp->nd_opt_type])
++						printk("%s: ND6 option overwritten by PvD %s: type=%d\n",
++						__func__, pvd_name, nd_opt_temp->nd_opt_type);
 +					ndopts->nd_opt_array[nd_opt_temp->nd_opt_type] = nd_opt_temp;
-+				}
-+				break;
-+			case ND_OPT_PREFIX_INFO:
-+				ndopts->nd_opts_pi_end = nd_opt_temp;
-+				if (!ndopts->nd_opts_pi)
-+					ndopts->nd_opts_pi = nd_opt_temp;
 +					break;
-+	#ifdef CONFIG_IPV6_ROUTE_INFO
-+			case ND_OPT_ROUTE_INFO:
-+				ndopts->nd_opts_ri_end = nd_opt_temp;
-+				if (!ndopts->nd_opts_ri)
-+					ndopts->nd_opts_ri = nd_opt_temp;
-+				break;
-+	#endif
-+			default:
-+				if(ndisc_is_useropt(dev, nd_opt_temp)) {
-+					ndopts->nd_useropts_end = nd_opt_temp;
-+					if(!ndopts->nd_useropts)
-+						ndopts->nd_useropts = nd_opt_temp;
-+				} else {
-+					ND_PRINTK(2, notice,
-+							  "%s: option ignored in PvD %s: type=%d, len=%d\n",
-+							  __func__,
-+							  nd_opt_temp->nd_opt_type,
-+							  nd_opt_temp->nd_opt_len);
-+				}
-+
-+		}
++				case ND_OPT_PREFIX_INFO:
++					ndopts->nd_opts_pi_end = nd_opt_temp;
++					if (!ndopts->nd_opts_pi)
++						ndopts->nd_opts_pi = nd_opt_temp;
++						break;
++		#ifdef CONFIG_IPV6_ROUTE_INFO
++				case ND_OPT_ROUTE_INFO:
++					ndopts->nd_opts_ri_end = nd_opt_temp;
++					if (!ndopts->nd_opts_ri)
++						ndopts->nd_opts_ri = nd_opt_temp;
++					break;
++		#endif
++				default:
++					if (ndisc_is_useropt(dev, nd_opt_temp)) {
++						ndopts->nd_useropts_end = nd_opt_temp;
++							if (!ndopts->nd_useropts)
++							ndopts->nd_useropts = nd_opt_temp;
++					} else {
++						ND_PRINTK(2, notice,
++								"%s: option ignored in PvD %s: type=%d, len=%d\n",
++								__func__,
++								nd_opt_temp->nd_opt_type,
++								nd_opt_temp->nd_opt_len);
++					}
++			}
 +	pvd_next_opt:
-+		len_opt_in_pvd -= opt_temp_len;
++		l -= opt_temp_len;
 +		nd_opt_in_pvd += opt_temp_len;
++		}
 +	}
 +	return 0;
 +}
 +#endif
-+
+ 
  struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  					  u8 *opt, int opt_len,
- 					  struct ndisc_options *ndopts)
-@@ -255,6 +402,19 @@ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
+@@ -255,6 +464,22 @@ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  				ndopts->nd_opts_ri = nd_opt;
  			break;
  #endif
@@ -12662,7 +12758,10 @@ index 7ebac630d3c6..bde92ece96dd 100644
 +						"%s: duplicated PVD option found. Ignored\n",
 +						__func__);
 +				} else {
-+					ndopts->nd_opt_pvdid = nd_opt;
++					/* ND6 options in nd_opt(pvd) will be refelcted in ndopts;
++					 yet we still need to note the position of PvD option for PvD header parsing */
++					if (pvdid_parse_opt(dev, nd_opt, NULL, ndopts)==0)
++						ndopts->nd_opt_pvdid = nd_opt;
 +				}
 +			}
 +			break;
@@ -12670,7 +12769,7 @@ index 7ebac630d3c6..bde92ece96dd 100644
  		default:
  			if (ndisc_is_useropt(dev, nd_opt)) {
  				ndopts->nd_useropts_end = nd_opt;
-@@ -277,6 +437,7 @@ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
+@@ -277,6 +502,7 @@ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
  		opt_len -= l;
  		nd_opt = ((void *)nd_opt) + l;
  	}
@@ -12678,7 +12777,7 @@ index 7ebac630d3c6..bde92ece96dd 100644
  	return ndopts;
  }
  
-@@ -513,6 +674,7 @@ void ndisc_send_na(struct net_device *dev, const struct in6_addr *daddr,
+@@ -513,6 +739,7 @@ void ndisc_send_na(struct net_device *dev, const struct in6_addr *daddr,
  	} else {
  		if (ipv6_dev_get_saddr(dev_net(dev), dev, daddr,
  				       inet6_sk(dev_net(dev)->ipv6.ndisc_sk)->srcprefs,
@@ -12686,20 +12785,20 @@ index 7ebac630d3c6..bde92ece96dd 100644
  				       &tmpaddr))
  			return;
  		src_addr = &tmpaddr;
-@@ -1149,6 +1311,12 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1149,6 +1376,12 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  	unsigned int pref = 0;
  	__u32 old_if_flags;
  	bool send_ifinfo_notify = false;
 +#ifdef	CONFIG_NETPVD
 +	struct net_pvd *pvd = NULL;
-+	struct ndisc_options ndopts_in_pvd;
++	struct pvd_header pvd_hdr;
 +#else
 +	void *pvd = NULL;
 +#endif
  
  	__u8 *opt = (__u8 *)(ra_msg + 1);
  
-@@ -1197,6 +1365,69 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1197,6 +1430,65 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  		goto skip_linkparms;
  	}
  
@@ -12715,39 +12814,34 @@ index 7ebac630d3c6..bde92ece96dd 100644
 +	 * + the incoming device (skb->dev)
 +	 * + and of course the pvd name
 +	 */
-+	/* if parse_pvd is turned off, ndopts.nd_opt_pvdid must be NULL */
-+	if (ndopts.nd_opt_pvdid && 
-+		pvdid_parse_opt(skb->dev, ndopts.nd_opt_pvdid, &ndopts_in_pvd) == 0) {
++	
++	/* extract the pvd option header info with its parser */
++	if (ipv6_parse_pvd(in6_dev) && ndopts.nd_opt_pvdid &&
++		pvdid_parse_opt(skb->dev, ndopts.nd_opt_pvdid, &pvd_hdr, NULL) == 0) {
 +		if ((pvd = register_pvd(
 +				dev_net(skb->dev),
-+				ndopts_in_pvd.pvdname,
++				pvd_hdr.pvdname,
 +				skb->dev,
 +				&ipv6_hdr(skb)->saddr)) == NULL) {
 +			ND_PRINTK(0, err, "RA: can't allocate pvd %s\n",
-+				 ndopts_in_pvd.pvdname);
++				 pvd_hdr.pvdname);
 +			return;
 +		}
++		/* only notify after the ND6 options are handled */
 +		pvd->notifications_blocked = true;
 +
-+		/*
-+		 * Fill in the rest of parameters. We only keep here
-+		 * the fields that the kernel can use. Other associated
-+		 * values, such as DNSSL/RDNSS, will be caught via the
-+		 * netlink notifications by the user land applications.
-+		 */
-+		pvd->h_flag = ndopts_in_pvd.pvd_h_flag;
-+		pvd->l_flag = ndopts_in_pvd.pvd_l_flag;
-+		pvd->a_flag = ndopts_in_pvd.pvd_a_flag;
-+		pvd->sequence_number = ndopts_in_pvd.pvd_sequence_number;
++		pvd->h_flag = pvd_hdr.pvd_h_flag;
++		pvd->l_flag = pvd_hdr.pvd_l_flag;
++		pvd->a_flag = (pvd_hdr.pvd_a_flag > 0) ? 1 : 0;
++		pvd->sequence_number = pvd_hdr.pvd_sequence_number;
 +
-+		if (ndopts_in_pvd.pvd_a_flag != 0) {
-+			/* replace the RA header with that inside the PvD option if a flag set */
-+			/* reminde that when a flag is set, ndopts_in_pvd.pvd_a_flag tells the byte offset in pvd option to RA header */
-+			ra_msg = (struct ra_msg *)(((u8 *)ndopts.nd_opt_pvdid) + ndopts_in_pvd.pvd_a_flag);
-+			/* TODO: change to info level */
++		if (pvd_hdr.pvd_a_flag != 0) {
++			/* replace the RA header with that inside the PvD option if a flag is set */
++			/* reminde that when a flag is set, pvd_hdr.pvd_a_flag tells the byte offset in pvd option to RA header */
++			ra_msg = (struct ra_msg *)(((u8 *)ndopts.nd_opt_pvdid) + pvd_hdr.pvd_a_flag);
 +			ND_PRINTK(2, info, 
 +				      "%s: RA header overwritten by PvD option:%s",
-+					   __func__, ndopts_in_pvd.pvdname);
++					   __func__, pvd_hdr.pvdname);
 +		}
 +	}
 +	else {
@@ -12763,13 +12857,14 @@ index 7ebac630d3c6..bde92ece96dd 100644
 +				ND_PRINTK(0, err, "RA: can't allocate implicit pvd\n");
 +			return;
 +		}
++		memset(&pvd_hdr, 0, sizeof(struct pvd_header));
 +	}
 +#endif
 +
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  	/* skip link-specific parameters from interior routers */
  	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT) {
-@@ -1268,7 +1499,7 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1268,7 +1560,7 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12778,7 +12873,7 @@ index 7ebac630d3c6..bde92ece96dd 100644
  		}
  	}
  	if (rt && lifetime == 0) {
-@@ -1282,11 +1513,12 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1282,11 +1574,12 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  		ND_PRINTK(3, info, "RA: adding default router\n");
  
  		rt = rt6_add_dflt_router(&ipv6_hdr(skb)->saddr, skb->dev, pref);
@@ -12792,7 +12887,7 @@ index 7ebac630d3c6..bde92ece96dd 100644
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1295,13 +1527,21 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1295,13 +1588,21 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12815,108 +12910,83 @@ index 7ebac630d3c6..bde92ece96dd 100644
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1421,9 +1661,35 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1406,9 +1707,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 
+ 	if (in6_dev->cnf.accept_ra_rtr_pref && ndopts.nd_opts_ri) {
+ 		struct nd_opt_hdr *p;
++#ifdef CONFIG_NETPVD
++		for (p = ndopts.nd_opts_ri;
++			 p;
++			 p = ndisc_next_option(p, ndopts.nd_opts_ri_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
++#else
+ 		for (p = ndopts.nd_opts_ri;
+ 		     p;
+-		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
++		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end))
++#endif
++		{
+ 			struct route_info *ri = (struct route_info *)p;
+ #ifdef CONFIG_IPV6_NDISC_NODETYPE
+ 			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
+@@ -1421,7 +1729,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
 -				      &ipv6_hdr(skb)->saddr);
 +				      &ipv6_hdr(skb)->saddr,
 +				      pvd);
-+		}
-+	}
-+
-+#ifdef CONFIG_NETPVD
-+	if (in6_dev->cnf.accept_ra_rtr_pref && pvd && 
-+		!pvd->implicit_flag && ndopts_in_pvd.nd_opts_ri) {
-+		struct nd_opt_hdr *p;
-+		for (p = ndopts_in_pvd.nd_opts_ri;
-+		     p;
-+		     p = ndisc_next_option(p, ndopts_in_pvd.nd_opts_ri_end)) {
-+			struct route_info *ri = (struct route_info *)p;
-+#ifdef CONFIG_IPV6_NDISC_NODETYPE
-+			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
-+			    ri->prefix_len == 0)
-+				continue;
-+#endif
-+			if (ri->prefix_len == 0 &&
-+			    !in6_dev->cnf.accept_ra_defrtr)
-+				continue;
-+			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
-+				continue;
-+			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
-+				      &ipv6_hdr(skb)->saddr,
-+				      pvd);
  		}
  	}
-+#endif
  
- skip_routeinfo:
- #endif
-@@ -1445,14 +1711,37 @@ static void ndisc_router_discovery(struct sk_buff *skb)
- 		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
+@@ -1440,12 +1749,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 
+ 	if (in6_dev->cnf.accept_ra_pinfo && ndopts.nd_opts_pi) {
+ 		struct nd_opt_hdr *p;
++#ifdef CONFIG_NETPVD
+ 		for (p = ndopts.nd_opts_pi;
+ 		     p;
+-		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
++			 p = ndisc_next_option(p, ndopts.nd_opts_pi_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
++#else
++		for (p = ndopts.nd_opts_pi;
++		     p;
++		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end))
++#endif
++		{
  			addrconf_prefix_rcv(skb->dev, (u8 *)p,
  					    (p->nd_opt_len) << 3,
 -					    ndopts.nd_opts_src_lladdr != NULL);
 +					    ndopts.nd_opts_src_lladdr != NULL,
 +					    pvd);
-+		}
-+	}
-+
-+#ifdef CONFIG_NETPVD
-+	if (in6_dev->cnf.accept_ra_pinfo && pvd &&
-+		!pvd->implicit_flag && ndopts_in_pvd.nd_opts_pi) {
-+		struct nd_opt_hdr *p;
-+		for (p = ndopts_in_pvd.nd_opts_pi;
-+		     p;
-+		     p = ndisc_next_option(p, ndopts_in_pvd.nd_opts_pi_end)) {
-+			addrconf_prefix_rcv(skb->dev, (u8 *)p,
-+					    (p->nd_opt_len) << 3,
-+					    ndopts.nd_opts_src_lladdr != NULL,
-+					    pvd);
- 		}
- 	}
-+#endif
- 
- 	if (ndopts.nd_opts_mtu && in6_dev->cnf.accept_ra_mtu) {
- 		__be32 n;
- 		u32 mtu;
- 
-+#ifdef CONFIG_NETPVD
-+		if (in6_dev->cnf.accept_ra_mtu && pvd && 
-+		    !pvd->implicit_flag && ndopts_in_pvd.nd_opts_mtu) {
-+			ndopts.nd_opts_mtu = ndopts_in_pvd.nd_opts_mtu;
-+		}
-+#endif
-+
- 		memcpy(&n, ((u8 *)(ndopts.nd_opts_mtu+1))+2, sizeof(mtu));
- 		mtu = ntohl(n);
- 
-@@ -1478,13 +1767,90 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  		}
  	}
  
+@@ -1470,10 +1787,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 
+ 	if (ndopts.nd_useropts) {
+ 		struct nd_opt_hdr *p;
 +#ifdef CONFIG_NETPVD
-+	if (pvd && !pvd->implicit_flag && ndopts_in_pvd.nd_useropts) {
-+		struct nd_opt_hdr *p;
-+		for (p = ndopts_in_pvd.nd_useropts;
+ 		for (p = ndopts.nd_useropts;
+ 		     p;
+ 		     p = ndisc_next_useropt(skb->dev, p,
+-					    ndopts.nd_useropts_end)) {
++			 						ndopts.nd_useropts_end,
++									ipv6_parse_pvd(in6_dev), 
++									pvd_hdr.offset_to_opt))
++#else
++		for (p = ndopts.nd_useropts;
 +		     p;
 +		     p = ndisc_next_useropt(skb->dev, p,
-+					    ndopts_in_pvd.nd_useropts_end)) {
-+			ndisc_ra_useropt(skb, p);
-+		}
-+	}
++					    ndopts.nd_useropts_end))
 +#endif
-+
++		{
+ 			ndisc_ra_useropt(skb, p);
+ 		}
+ 	}
+@@ -1481,10 +1808,56 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
-+
-+#ifdef CONFIG_NETPVD
-+	if (pvd && !pvd->implicit_flag && 
-+		(ndopts_in_pvd.nd_opts_tgt_lladdr || ndopts.nd_opts_rh)) {
-+			ND_PRINTK(2, warn, "RA: invalid RA options in PvD %s\n", pvd->name);
-+		}
-+#endif
 +
  out:
  	ip6_rt_put(rt);
@@ -12942,21 +13012,9 @@ index 7ebac630d3c6..bde92ece96dd 100644
 +		for (p = ndopts.nd_useropts;
 +		     p;
 +		     p = ndisc_next_useropt(skb->dev, p,
-+					    ndopts.nd_useropts_end)) {
-+			if (p->nd_opt_type == ND_OPT_RDNSS) {
-+				pvd_register_rdnss(pvd, p);
-+			} else if (p->nd_opt_type == ND_OPT_DNSSL) {
-+				pvd_register_dnssl(pvd, p);
-+			}
-+		}
-+	}
-+
-+	if (pvd && ! pvd->implicit_flag && ndopts_in_pvd.nd_useropts) {
-+		struct nd_opt_hdr *p;
-+		for (p = ndopts_in_pvd.nd_useropts;
-+		     p;
-+		     p = ndisc_next_useropt(skb->dev, p,
-+					    ndopts_in_pvd.nd_useropts_end)) {
++					    			ndopts.nd_useropts_end,
++									ipv6_parse_pvd(in6_dev),
++									pvd_hdr.offset_to_opt)) {
 +			if (p->nd_opt_type == ND_OPT_RDNSS) {
 +				pvd_register_rdnss(pvd, p);
 +			} else if (p->nd_opt_type == ND_OPT_DNSSL) {
