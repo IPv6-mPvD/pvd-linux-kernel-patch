@@ -9142,10 +9142,10 @@ index f6761b6e3b29..43b2a8f77b5a 100644
 +obj-$(CONFIG_NETPVD) += pvd.o
 diff --git a/net/core/pvd.c b/net/core/pvd.c
 new file mode 100644
-index 000000000000..cdd38ba1faf4
+index 000000000000..d2e04f8b451c
 --- /dev/null
 +++ b/net/core/pvd.c
-@@ -0,0 +1,2374 @@
+@@ -0,0 +1,2377 @@
 +/*
 + */
 +
@@ -9294,10 +9294,11 @@ index 000000000000..cdd38ba1faf4
 +
 +	seq_printf(
 +		seq,
-+		"seq=%d h=%s l=%s index=%lu lla=%s dev=%s\n",
++		"seq=%d h=%s l=%s a=%s index=%lu lla=%s dev=%s\n",
 +		pvd->sequence_number,
 +		pvd->h_flag ? "true" : "false",
 +		pvd->l_flag ? "true" : "false",
++		pvd->a_flag ? "true" : "false",
 +		(unsigned long) pvd_get_fullindex(pvd),
 +		addr6tostr(pvd->lla.s6_addr, sAddr),
 +		pvd->dev ? pvd->dev->name : "<nodev>");
@@ -9589,11 +9590,12 @@ index 000000000000..cdd38ba1faf4
 +	for (pvd = net->first_used_pvd; pvd; pvd = pvd->next) {
 +		seq_printf(
 +			seq,
-+			"name=%s seq=%d h=%s l=%s index=%lu lla=%s dev=%s\n",
++			"name=%s seq=%d h=%s l=%s a=%s index=%lu lla=%s dev=%s\n",
 +			pvd->name,
 +			pvd->sequence_number,
 +			pvd->h_flag ? "true" : "false",
 +			pvd->l_flag ? "true" : "false",
++			pvd->a_flag ? "true" : "false",
 +			(unsigned long) pvd_get_fullindex(pvd),
 +			addr6tostr(pvd->lla.s6_addr, sAddr),
 +			pvd->dev ? pvd->dev->name : "<nodev>");
@@ -10580,6 +10582,7 @@ index 000000000000..cdd38ba1faf4
 +	put_user(pvd->sequence_number, &pvdattr->sequence_number);
 +	put_user(pvd->h_flag, &pvdattr->h_flag);
 +	put_user(pvd->l_flag, &pvdattr->l_flag);
++	put_user(pvd->a_flag, &pvdattr->a_flag);  // introduced in draft-01
 +	put_user(pvd_get_fullindex(pvd), &pvdattr->index);
 +	put_user(pvd->implicit_flag, &pvdattr->implicit_flag);
 +
