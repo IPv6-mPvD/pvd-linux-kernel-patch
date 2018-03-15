@@ -8296,7 +8296,7 @@ index dbf0abba33b8..747978b37441 100644
  static inline int ip6_frag_mem(struct net *net)
  {
 diff --git a/include/net/ndisc.h b/include/net/ndisc.h
-index 8a0214654b6b..f096e8566939 100644
+index 8a0214654b6b..313570295364 100644
 --- a/include/net/ndisc.h
 +++ b/include/net/ndisc.h
 @@ -37,6 +37,9 @@ enum {
@@ -8304,7 +8304,7 @@ index 8a0214654b6b..f096e8566939 100644
  	ND_OPT_DNSSL = 31,		/* RFC6106 */
  	ND_OPT_6CO = 34,		/* RFC6775 */
 +#ifdef	CONFIG_NETPVD
-+	ND_OPT_PVDID = 254,		/* change to 254 temporary for draft 01 */
++	ND_OPT_PVDID = 21,		/* temporary allocation from IANA */
 +#endif
  	__ND_OPT_MAX
  };
@@ -8334,12 +8334,12 @@ index 8a0214654b6b..f096e8566939 100644
  /* ND options */
  struct ndisc_options {
  	struct nd_opt_hdr *nd_opt_array[__ND_OPT_ARRAY_MAX];
-@@ -114,7 +128,27 @@ struct ndisc_options {
+@@ -114,7 +128,28 @@ struct ndisc_options {
  #if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
  	struct nd_opt_hdr *nd_802154_opt_array[ND_OPT_TARGET_LL_ADDR + 1];
  #endif
 +#ifdef	CONFIG_NETPVD
-+	struct nd_opt_hdr *nd_opt_pvdid;	
++	struct nd_opt_hdr *nd_opt_pvdid;
 +#endif
 +};
 +
@@ -8352,7 +8352,8 @@ index 8a0214654b6b..f096e8566939 100644
 +	int pvd_l_flag;
 +	/* introduced in draft 01, when set in RA message, 
 +	this variable indicates the offset in unit of byte 
-+	to reach RA header from the beginning of the PvD option, i.e. nd_opt_pvdid */
++	to reach RA header from the beginning of the PvD option, when a flag set;
++	otherwise it equals to 0. */
 +	int pvd_a_flag;
 +	/* the offset in byte from the beginning of the PvD option to the next RA option 
 +	helps skip PvD header and PvD ID (floating length) in option iterator */
@@ -8362,7 +8363,7 @@ index 8a0214654b6b..f096e8566939 100644
  
  #define nd_opts_src_lladdr		nd_opt_array[ND_OPT_SOURCE_LL_ADDR]
  #define nd_opts_tgt_lladdr		nd_opt_array[ND_OPT_TARGET_LL_ADDR]
-@@ -215,7 +249,8 @@ struct ndisc_ops {
+@@ -215,7 +250,8 @@ struct ndisc_ops {
  				       int addr_type, u32 addr_flags,
  				       bool sllao, bool tokenized,
  				       __u32 valid_lft, u32 prefered_lft,
@@ -8372,7 +8373,7 @@ index 8a0214654b6b..f096e8566939 100644
  };
  
  #if IS_ENABLED(CONFIG_IPV6)
-@@ -295,7 +330,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+@@ -295,7 +331,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
  						 bool sllao, bool tokenized,
  						 __u32 valid_lft,
  						 u32 prefered_lft,
@@ -8382,7 +8383,7 @@ index 8a0214654b6b..f096e8566939 100644
  {
  	if (dev->ndisc_ops && dev->ndisc_ops->prefix_rcv_add_addr)
  		dev->ndisc_ops->prefix_rcv_add_addr(net, dev, pinfo, in6_dev,
-@@ -303,7 +339,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+@@ -303,7 +340,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
  						    addr_flags, sllao,
  						    tokenized, valid_lft,
  						    prefered_lft,
@@ -11610,7 +11611,7 @@ index 6592d7bbed39..af11dd9e3acb 100644
 +}
 +EXPORT_SYMBOL(addr6tostr);
 diff --git a/net/ipv6/addrconf.c b/net/ipv6/addrconf.c
-index 82a55980e03e..8bd1e42ba33d 100644
+index 82a55980e03e..b70eca9101f4 100644
 --- a/net/ipv6/addrconf.c
 +++ b/net/ipv6/addrconf.c
 @@ -80,6 +80,11 @@
@@ -11888,17 +11889,18 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	if (len < sizeof(struct prefix_info)) {
  		ADBG("addrconf: prefix option too short\n");
  		return;
-@@ -2570,6 +2642,9 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2570,6 +2642,10 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  			} else {
  				rt6_clean_expires(rt);
  			}
 +#ifdef	CONFIG_NETPVD
++			printk("%s calls pvd_migrate_route()\n", __func__);
 +			pvd_migrate_route(pvd, rt);
 +#endif
  		} else if (valid_lft) {
  			clock_t expires = 0;
  			int flags = RTF_ADDRCONF | RTF_PREFIX_RT;
-@@ -2579,7 +2654,8 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2579,7 +2655,8 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  				expires = jiffies_to_clock_t(rt_expires);
  			}
  			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
@@ -11908,7 +11910,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		}
  		ip6_rt_put(rt);
  	}
-@@ -2621,7 +2697,8 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2621,7 +2698,8 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  						   &addr, addr_type,
  						   addr_flags, sllao,
  						   tokenized, valid_lft,
@@ -11918,7 +11920,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		if (err)
  			goto put;
  
-@@ -2632,9 +2709,21 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2632,9 +2710,21 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  					      addr_type, addr_flags, sllao,
  					      tokenized, valid_lft,
  					      prefered_lft,
@@ -11941,7 +11943,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  put:
  	in6_dev_put(in6_dev);
  }
-@@ -2729,7 +2818,8 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2729,7 +2819,8 @@ static int inet6_addr_add(struct net *net, int ifindex,
  			  const struct in6_addr *pfx,
  			  const struct in6_addr *peer_pfx,
  			  unsigned int plen, __u32 ifa_flags,
@@ -11951,7 +11953,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  {
  	struct inet6_ifaddr *ifp;
  	struct inet6_dev *idev;
-@@ -2755,7 +2845,7 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2755,7 +2846,7 @@ static int inet6_addr_add(struct net *net, int ifindex,
  	if (!dev)
  		return -ENODEV;
  
@@ -11960,7 +11962,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	if (IS_ERR(idev))
  		return PTR_ERR(idev);
  
-@@ -2788,12 +2878,14 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2788,12 +2879,14 @@ static int inet6_addr_add(struct net *net, int ifindex,
  	}
  
  	ifp = ipv6_add_addr(idev, pfx, peer_pfx, plen, scope, ifa_flags,
@@ -11977,7 +11979,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		}
  
  		/*
-@@ -2873,7 +2965,8 @@ int addrconf_add_ifaddr(struct net *net, void __user *arg)
+@@ -2873,7 +2966,8 @@ int addrconf_add_ifaddr(struct net *net, void __user *arg)
  	rtnl_lock();
  	err = inet6_addr_add(net, ireq.ifr6_ifindex, &ireq.ifr6_addr, NULL,
  			     ireq.ifr6_prefixlen, IFA_F_PERMANENT,
@@ -11987,7 +11989,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	rtnl_unlock();
  	return err;
  }
-@@ -2897,13 +2990,15 @@ int addrconf_del_ifaddr(struct net *net, void __user *arg)
+@@ -2897,13 +2991,15 @@ int addrconf_del_ifaddr(struct net *net, void __user *arg)
  }
  
  static void add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
@@ -12005,7 +12007,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	if (!IS_ERR(ifp)) {
  		spin_lock_bh(&ifp->lock);
  		ifp->flags &= ~IFA_F_TENTATIVE;
-@@ -2939,8 +3034,8 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+@@ -2939,8 +3035,8 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
  	}
  
  	if (addr.s6_addr32[3]) {
@@ -12016,7 +12018,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		return;
  	}
  
-@@ -2963,9 +3058,10 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+@@ -2963,9 +3059,10 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
  					flag |= IFA_HOST;
  				}
  
@@ -12029,7 +12031,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  			}
  		}
  	}
-@@ -2989,7 +3085,7 @@ static void init_loopback(struct net_device *dev)
+@@ -2989,7 +3086,7 @@ static void init_loopback(struct net_device *dev)
  		return;
  	}
  
@@ -12038,7 +12040,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  
  	/* Add routes to other interface's IPv6 addresses */
  	for_each_netdev(dev_net(dev), sp_dev) {
-@@ -3019,7 +3115,7 @@ static void init_loopback(struct net_device *dev)
+@@ -3019,7 +3116,7 @@ static void init_loopback(struct net_device *dev)
  				}
  			}
  
@@ -12047,7 +12049,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  
  			/* Failure cases are ignored */
  			if (!IS_ERR(sp_rt)) {
-@@ -3032,7 +3128,8 @@ static void init_loopback(struct net_device *dev)
+@@ -3032,7 +3129,8 @@ static void init_loopback(struct net_device *dev)
  }
  
  void addrconf_add_linklocal(struct inet6_dev *idev,
@@ -12057,7 +12059,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  {
  	struct inet6_ifaddr *ifp;
  	u32 addr_flags = flags | IFA_F_PERMANENT;
-@@ -3044,9 +3141,10 @@ void addrconf_add_linklocal(struct inet6_dev *idev,
+@@ -3044,9 +3142,10 @@ void addrconf_add_linklocal(struct inet6_dev *idev,
  #endif
  
  	ifp = ipv6_add_addr(idev, addr, NULL, 64, IFA_LINK, addr_flags,
@@ -12070,7 +12072,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		addrconf_dad_start(ifp);
  		in6_ifa_put(ifp);
  	}
-@@ -3142,7 +3240,7 @@ static void ipv6_gen_mode_random_init(struct inet6_dev *idev)
+@@ -3142,7 +3241,7 @@ static void ipv6_gen_mode_random_init(struct inet6_dev *idev)
  	s->initialized = true;
  }
  
@@ -12079,7 +12081,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  {
  	struct in6_addr addr;
  
-@@ -3159,9 +3257,10 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+@@ -3159,9 +3258,10 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
  	case IN6_ADDR_GEN_MODE_STABLE_PRIVACY:
  		if (!ipv6_generate_stable_address(&addr, 0, idev))
  			addrconf_add_linklocal(idev, &addr,
@@ -12092,7 +12094,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		break;
  	case IN6_ADDR_GEN_MODE_EUI64:
  		/* addrconf_add_linklocal also adds a prefix_route and we
-@@ -3169,9 +3268,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+@@ -3169,9 +3269,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
  		 * couldn't generate one.
  		 */
  		if (ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) == 0)
@@ -12104,7 +12106,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		break;
  	case IN6_ADDR_GEN_MODE_NONE:
  	default:
-@@ -3198,7 +3297,7 @@ static void addrconf_dev_config(struct net_device *dev)
+@@ -3198,7 +3298,7 @@ static void addrconf_dev_config(struct net_device *dev)
  		return;
  	}
  
@@ -12113,7 +12115,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	if (IS_ERR(idev))
  		return;
  
-@@ -3207,7 +3306,7 @@ static void addrconf_dev_config(struct net_device *dev)
+@@ -3207,7 +3307,7 @@ static void addrconf_dev_config(struct net_device *dev)
  	    idev->addr_gen_mode == IN6_ADDR_GEN_MODE_EUI64)
  		idev->addr_gen_mode = IN6_ADDR_GEN_MODE_RANDOM;
  
@@ -12122,7 +12124,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  }
  
  #if IS_ENABLED(CONFIG_IPV6_SIT)
-@@ -3230,14 +3329,14 @@ static void addrconf_sit_config(struct net_device *dev)
+@@ -3230,14 +3330,14 @@ static void addrconf_sit_config(struct net_device *dev)
  	}
  
  	if (dev->priv_flags & IFF_ISATAP) {
@@ -12139,7 +12141,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  }
  #endif
  
-@@ -3254,9 +3353,9 @@ static void addrconf_gre_config(struct net_device *dev)
+@@ -3254,9 +3354,9 @@ static void addrconf_gre_config(struct net_device *dev)
  		return;
  	}
  
@@ -12151,7 +12153,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  }
  #endif
  
-@@ -3270,7 +3369,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+@@ -3270,7 +3370,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
  	if (!ifp->rt || !atomic_read(&ifp->rt->rt6i_ref)) {
  		struct rt6_info *rt, *prev;
  
@@ -12160,7 +12162,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		if (unlikely(IS_ERR(rt)))
  			return PTR_ERR(rt);
  
-@@ -3285,7 +3384,8 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+@@ -3285,7 +3385,8 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
  
  	if (!(ifp->flags & IFA_F_NOPREFIXROUTE)) {
  		addrconf_prefix_route(&ifp->addr, ifp->prefix_len,
@@ -12170,7 +12172,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	}
  
  	if (ifp->state == INET6_IFADDR_STATE_PREDAD)
-@@ -4146,13 +4246,24 @@ static void if6_seq_stop(struct seq_file *seq, void *v)
+@@ -4146,13 +4247,24 @@ static void if6_seq_stop(struct seq_file *seq, void *v)
  static int if6_seq_show(struct seq_file *seq, void *v)
  {
  	struct inet6_ifaddr *ifp = (struct inet6_ifaddr *)v;
@@ -12197,7 +12199,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	return 0;
  }
  
-@@ -4414,7 +4525,8 @@ inet6_rtm_deladdr(struct sk_buff *skb, struct nlmsghdr *nlh)
+@@ -4414,7 +4526,8 @@ inet6_rtm_deladdr(struct sk_buff *skb, struct nlmsghdr *nlh)
  }
  
  static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
@@ -12207,7 +12209,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  {
  	u32 flags;
  	clock_t expires;
-@@ -4461,13 +4573,17 @@ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
+@@ -4461,13 +4574,17 @@ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
  	ifp->valid_lft = valid_lft;
  	ifp->prefered_lft = prefered_lft;
  
@@ -12226,7 +12228,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	} else if (had_prefixroute) {
  		enum cleanup_prefix_rt_t action;
  		unsigned long rt_expires;
-@@ -4506,6 +4622,7 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
+@@ -4506,6 +4623,7 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
  	u32 valid_lft = INFINITY_LIFE_TIME, preferred_lft = INFINITY_LIFE_TIME;
  	u32 ifa_flags;
  	int err;
@@ -12234,7 +12236,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  
  	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFA_MAX, ifa_ipv6_policy);
  	if (err < 0)
-@@ -4527,6 +4644,22 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
+@@ -4527,6 +4645,22 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
  		valid_lft = INFINITY_LIFE_TIME;
  	}
  
@@ -12257,7 +12259,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	dev =  __dev_get_by_index(net, ifm->ifa_index);
  	if (!dev)
  		return -ENODEV;
-@@ -4545,14 +4678,15 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
+@@ -4545,14 +4679,15 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh)
  		 */
  		return inet6_addr_add(net, ifm->ifa_index, pfx, peer_pfx,
  				      ifm->ifa_prefixlen, ifa_flags,
@@ -12275,7 +12277,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  
  	in6_ifa_put(ifa);
  
-@@ -4655,6 +4789,17 @@ static int inet6_fill_ifaddr(struct sk_buff *skb, struct inet6_ifaddr *ifa,
+@@ -4655,6 +4790,17 @@ static int inet6_fill_ifaddr(struct sk_buff *skb, struct inet6_ifaddr *ifa,
  	if (nla_put_u32(skb, IFA_FLAGS, ifa->flags) < 0)
  		goto error;
  
@@ -12293,7 +12295,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  	nlmsg_end(skb, nlh);
  	return 0;
  
-@@ -5002,6 +5147,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
+@@ -5002,6 +5148,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
  	array[DEVCONF_SEG6_REQUIRE_HMAC] = cnf->seg6_require_hmac;
  #endif
  	array[DEVCONF_ENHANCED_DAD] = cnf->enhanced_dad;
@@ -12303,7 +12305,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  }
  
  static inline size_t inet6_ifla6_size(void)
-@@ -5473,7 +5621,8 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
+@@ -5473,7 +5622,8 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
  			addrconf_join_anycast(ifp);
  		if (!ipv6_addr_any(&ifp->peer_addr))
  			addrconf_prefix_route(&ifp->peer_addr, 128,
@@ -12313,7 +12315,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  		break;
  	case RTM_DELADDR:
  		if (ifp->idev->cnf.forwarding)
-@@ -5483,7 +5632,8 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
+@@ -5483,7 +5633,8 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
  			struct rt6_info *rt;
  
  			rt = addrconf_get_prefix_route(&ifp->peer_addr, 128,
@@ -12323,7 +12325,7 @@ index 82a55980e03e..8bd1e42ba33d 100644
  			if (rt)
  				ip6_del_rt(rt);
  		}
-@@ -6114,6 +6264,15 @@ static const struct ctl_table addrconf_sysctl[] = {
+@@ -6114,6 +6265,15 @@ static const struct ctl_table addrconf_sysctl[] = {
  		.mode           = 0644,
  		.proc_handler   = proc_dointvec,
  	},
@@ -12488,7 +12490,7 @@ index a9692ec0cd6d..520bc1852bd8 100644
  		ndst = dst;
  	}
 diff --git a/net/ipv6/ndisc.c b/net/ipv6/ndisc.c
-index 7ebac630d3c6..6798b14daa27 100644
+index 7ebac630d3c6..3c43cc8c0e75 100644
 --- a/net/ipv6/ndisc.c
 +++ b/net/ipv6/ndisc.c
 @@ -36,6 +36,7 @@
@@ -12603,7 +12605,7 @@ index 7ebac630d3c6..6798b14daa27 100644
 +Yet, step 2/ relies on step 1/ to calculate the offset to the ND6 options inside the PvD.
 +
 +As a result this pvdid_parse_opt is actually called twice throughout the processing on an RA:
-+first when parsing the options in RA (both step 1 and 2 are exectured, yet only the results of step2 is counted).
++first when parsing the options in RA (both step 1 and 2 are exectuted, yet only the results of step2 is counted).
 +once parsing is a success and sysctl options allows accepting ra and parse PvD, a PvD structure is prepared to be registered/updated.
 +*/
 +static int pvdid_parse_opt(const struct net_device *dev,
@@ -12890,7 +12892,7 @@ index 7ebac630d3c6..6798b14daa27 100644
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1295,13 +1588,21 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1295,13 +1588,22 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -12907,13 +12909,14 @@ index 7ebac630d3c6..6798b14daa27 100644
 +	 * Make sure this default route is linked to the pvd
 +	 */
 +	if (rt)
++		printk("%s calls pvd_migrate_route()\n", __func__);
 +		pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1406,9 +1707,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1406,9 +1708,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  
  	if (in6_dev->cnf.accept_ra_rtr_pref && ndopts.nd_opts_ri) {
  		struct nd_opt_hdr *p;
@@ -12931,7 +12934,7 @@ index 7ebac630d3c6..6798b14daa27 100644
  			struct route_info *ri = (struct route_info *)p;
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
-@@ -1421,7 +1729,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1421,7 +1730,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -12941,7 +12944,7 @@ index 7ebac630d3c6..6798b14daa27 100644
  		}
  	}
  
-@@ -1440,12 +1749,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1440,12 +1750,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  
  	if (in6_dev->cnf.accept_ra_pinfo && ndopts.nd_opts_pi) {
  		struct nd_opt_hdr *p;
@@ -12964,7 +12967,7 @@ index 7ebac630d3c6..6798b14daa27 100644
  		}
  	}
  
-@@ -1470,10 +1787,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1470,10 +1788,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  
  	if (ndopts.nd_useropts) {
  		struct nd_opt_hdr *p;
@@ -12986,7 +12989,7 @@ index 7ebac630d3c6..6798b14daa27 100644
  			ndisc_ra_useropt(skb, p);
  		}
  	}
-@@ -1481,10 +1808,56 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1481,10 +1809,56 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
@@ -13058,7 +13061,7 @@ index 051b6a6bfff6..bdfb0b597fd1 100644
  
  	nfct_nat(ct)->masq_index = out->ifindex;
 diff --git a/net/ipv6/route.c b/net/ipv6/route.c
-index 1fea5f8feb4b..43a14c03a9b1 100644
+index 1fea5f8feb4b..3bcb7d000680 100644
 --- a/net/ipv6/route.c
 +++ b/net/ipv6/route.c
 @@ -36,6 +36,7 @@
@@ -13069,18 +13072,20 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  #include <linux/in6.h>
  #include <linux/mroute6.h>
  #include <linux/init.h>
-@@ -401,6 +402,10 @@ static void ip6_dst_destroy(struct dst_entry *dst)
+@@ -401,6 +402,12 @@ static void ip6_dst_destroy(struct dst_entry *dst)
  	}
  
  	dst->from = NULL;
 +
 +#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	dump_stack();
 +	pvd_migrate_route(NULL, rt);
 +#endif
  	dst_release(from);
  }
  
-@@ -480,12 +485,17 @@ static struct rt6_info *rt6_multipath_select(struct rt6_info *match,
+@@ -480,12 +487,17 @@ static struct rt6_info *rt6_multipath_select(struct rt6_info *match,
  
  /*
   *	Route lookup. Any table->tb6_lock is implied.
@@ -13098,7 +13103,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  						    int flags)
  {
  	struct rt6_info *local = NULL;
-@@ -497,6 +507,19 @@ static inline struct rt6_info *rt6_device_match(struct net *net,
+@@ -497,6 +509,19 @@ static inline struct rt6_info *rt6_device_match(struct net *net,
  	for (sprt = rt; sprt; sprt = sprt->dst.rt6_next) {
  		struct net_device *dev = sprt->dst.dev;
  
@@ -13118,7 +13123,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  		if (oif) {
  			if (dev->ifindex == oif)
  				return sprt;
-@@ -704,7 +727,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
+@@ -704,7 +729,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
  
  static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  				     struct rt6_info *rr_head,
@@ -13127,7 +13132,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  				     bool *do_rr)
  {
  	struct rt6_info *rt, *match, *cont;
-@@ -713,6 +736,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -713,6 +738,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	match = NULL;
  	cont = NULL;
  	for (rt = rr_head; rt; rt = rt->dst.rt6_next) {
@@ -13139,7 +13144,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -722,6 +750,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -722,6 +752,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	}
  
  	for (rt = fn->leaf; rt && rt != rr_head; rt = rt->dst.rt6_next) {
@@ -13151,7 +13156,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -733,13 +766,19 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -733,13 +768,19 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	if (match || !cont)
  		return match;
  
@@ -13173,7 +13178,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  {
  	struct rt6_info *match, *rt0;
  	struct net *net;
-@@ -749,7 +788,7 @@ static struct rt6_info *rt6_select(struct fib6_node *fn, int oif, int strict)
+@@ -749,7 +790,7 @@ static struct rt6_info *rt6_select(struct fib6_node *fn, int oif, int strict)
  	if (!rt0)
  		fn->rr_ptr = rt0 = fn->leaf;
  
@@ -13182,7 +13187,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  			     &do_rr);
  
  	if (do_rr) {
-@@ -774,7 +813,8 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
+@@ -774,7 +815,8 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
  
  #ifdef CONFIG_IPV6_ROUTE_INFO
  int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
@@ -13192,7 +13197,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  {
  	struct net *net = dev_net(dev);
  	struct route_info *rinfo = (struct route_info *) opt;
-@@ -783,6 +823,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -783,6 +825,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  	unsigned long lifetime;
  	struct rt6_info *rt;
  
@@ -13204,7 +13209,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (len < sizeof(struct route_info)) {
  		return -EINVAL;
  	}
-@@ -818,6 +863,14 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -818,6 +865,14 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  		prefix = &prefix_buf;
  	}
  
@@ -13219,18 +13224,19 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (rinfo->prefix_len == 0)
  		rt = rt6_get_dflt_router(gwaddr, dev);
  	else
-@@ -836,6 +889,10 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -836,6 +891,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  		rt->rt6i_flags = RTF_ROUTEINFO |
  				 (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
  
 +#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
 +	pvd_migrate_route(pvd, rt);
 +#endif
 +
  	if (rt) {
  		if (!addrconf_finite_timeout(lifetime))
  			rt6_clean_expires(rt);
-@@ -871,12 +928,16 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
+@@ -871,12 +931,16 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
  {
  	struct fib6_node *fn;
  	struct rt6_info *rt;
@@ -13248,7 +13254,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
  		rt = rt6_multipath_select(rt, fl6, fl6->flowi6_oif, flags);
  	if (rt == net->ipv6.ip6_null_entry) {
-@@ -1067,6 +1128,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1067,6 +1131,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	struct fib6_node *fn, *saved_fn;
  	struct rt6_info *rt;
  	int strict = 0;
@@ -13256,7 +13262,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  
  	strict |= flags & RT6_LOOKUP_F_IFACE;
  	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
-@@ -1081,8 +1143,11 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1081,8 +1146,11 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
  		oif = 0;
  
@@ -13269,7 +13275,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (rt->rt6i_nsiblings)
  		rt = rt6_multipath_select(rt, fl6, oif, strict);
  	if (rt == net->ipv6.ip6_null_entry) {
-@@ -1226,6 +1291,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
+@@ -1226,6 +1294,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
@@ -13282,11 +13288,12 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -2093,12 +2164,21 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg)
+@@ -2093,12 +2167,23 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg)
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
 +#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
 +	pvd_migrate_route(cfg->fc_pvd, rt);
 +#endif
 +
@@ -13298,13 +13305,14 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  		in6_dev_put(idev);
 +
 +#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
 +	pvd_migrate_route(NULL, rt);	/* deassociate rt and its pvd */
 +#endif
 +
  	if (rt)
  		dst_free(&rt->dst);
  
-@@ -2416,6 +2496,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
+@@ -2416,6 +2501,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -13314,7 +13322,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  
  	/* We should treat it as a default route if prefix length is 0. */
  	if (!prefixlen)
-@@ -2427,7 +2510,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
+@@ -2427,7 +2515,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
  }
  #endif
  
@@ -13325,7 +13333,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  {
  	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
  	struct rt6_info *rt;
-@@ -2447,6 +2532,7 @@ struct rt6_info *rt6_get_dflt_router(const struct in6_addr *addr, struct net_dev
+@@ -2447,6 +2537,7 @@ struct rt6_info *rt6_get_dflt_router(const struct in6_addr *addr, struct net_dev
  	if (rt)
  		dst_hold(&rt->dst);
  	read_unlock_bh(&table->tb6_lock);
@@ -13333,7 +13341,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	return rt;
  }
  
-@@ -2466,6 +2552,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
+@@ -2466,6 +2557,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -13343,7 +13351,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  
  	if (!ip6_route_add(&cfg)) {
  		struct fib6_table *table;
-@@ -2631,6 +2720,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
+@@ -2631,6 +2725,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
@@ -13351,17 +13359,18 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  				    bool anycast)
  {
  	u32 tb_id;
-@@ -2654,6 +2744,9 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+@@ -2654,6 +2749,10 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
 +#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
 +	pvd_migrate_route(pvd, rt);
 +#endif
  
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
  	if (anycast)
-@@ -2943,6 +3036,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -2943,6 +3042,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
  			goto errout;
  	}
  
@@ -13388,7 +13397,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -3311,7 +3424,7 @@ static int rt6_fill_node(struct net *net,
+@@ -3311,7 +3430,7 @@ static int rt6_fill_node(struct net *net,
  				goto nla_put_failure;
  	} else if (dst) {
  		struct in6_addr saddr_buf;
@@ -13397,7 +13406,7 @@ index 1fea5f8feb4b..43a14c03a9b1 100644
  		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
  			goto nla_put_failure;
  	}
-@@ -3351,6 +3464,18 @@ static int rt6_fill_node(struct net *net,
+@@ -3351,6 +3470,18 @@ static int rt6_fill_node(struct net *net,
  	if (lwtunnel_fill_encap(skb, rt->dst.lwtstate) < 0)
  		goto nla_put_failure;
  
