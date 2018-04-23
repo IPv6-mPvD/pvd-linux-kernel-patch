@@ -1,0 +1,5431 @@
+diff --git a/drivers/net/Kconfig b/drivers/net/Kconfig
+index 0936da592e12..b4b0edd30881 100644
+--- a/drivers/net/Kconfig
++++ b/drivers/net/Kconfig
+@@ -1,3 +1,20 @@
++#
++# Network Provisioning Domain configuration
++#
++
++menuconfig NETPVD
++	default y if UML
++	depends on NET
++	bool "Network PvD support"
++	---help---
++	  You can say N here if you don't intend to connect your Linux box to
++	  any other computer at all.
++
++	  You'll have to say Y if applications intend to make use of the
++	  provisioning domain feature
++
++	  If unsure, say Y.
++
+ #
+ # Network device configuration
+ #
+diff --git a/drivers/scsi/cxgbi/libcxgbi.c b/drivers/scsi/cxgbi/libcxgbi.c
+index ce1336414e0a..79e58726f29e 100644
+--- a/drivers/scsi/cxgbi/libcxgbi.c
++++ b/drivers/scsi/cxgbi/libcxgbi.c
+@@ -788,7 +788,7 @@ cxgbi_check_route6(struct sockaddr *dst_addr, int ifindex)
+ 		struct inet6_dev *idev = ip6_dst_idev((struct dst_entry *)rt);
+ 
+ 		err = ipv6_dev_get_saddr(&init_net, idev ? idev->dev : NULL,
+-					 &daddr6->sin6_addr, 0, &pref_saddr);
++					 &daddr6->sin6_addr, 0, /*PvD*/ NULL, &pref_saddr);
+ 		if (err) {
+ 			pr_info("failed to get source address to reach %pI6\n",
+ 				&daddr6->sin6_addr);
+diff --git a/include/linux/inet.h b/include/linux/inet.h
+index 636ebe87e6f8..016bc148c60b 100644
+--- a/include/linux/inet.h
++++ b/include/linux/inet.h
+@@ -60,4 +60,5 @@ extern int in6_pton(const char *src, int srclen, u8 *dst, int delim, const char
+ extern int inet_pton_with_scope(struct net *net, unsigned short af,
+ 		const char *src, const char *port, struct sockaddr_storage *addr);
+ 
++extern char *addr6tostr(u8 const *addr, char *str);
+ #endif	/* _LINUX_INET_H */
+diff --git a/include/linux/ipv6.h b/include/linux/ipv6.h
+index 8415bf1a9776..90862cadc976 100644
+--- a/include/linux/ipv6.h
++++ b/include/linux/ipv6.h
+@@ -75,6 +75,10 @@ struct ipv6_devconf {
+ 	__s32		disable_policy;
+ 	__s32           ndisc_tclass;
+ 
++#ifdef CONFIG_NETPVD
++	__u32		parse_pvd;
++#endif
++
+ 	struct ctl_table_header *sysctl_header;
+ };
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index d2588263a989..8311416c34e4 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1087,7 +1087,9 @@ struct task_struct {
+ 	/* Used by LSM modules for access restriction: */
+ 	void				*security;
+ #endif
+-
++#ifdef CONFIG_NETPVD
++	char	*bound_pvd;	/* 0 : inherit; -1 : unset, otherwise : set */
++#endif 
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+ 	 * they are included in the randomized portion of task_struct.
+diff --git a/include/net/addrconf.h b/include/net/addrconf.h
+index b623b65a79d1..332bd73f0060 100644
+--- a/include/net/addrconf.h
++++ b/include/net/addrconf.h
+@@ -88,6 +88,7 @@ struct inet6_ifaddr *ipv6_get_ifaddr(struct net *net,
+ 
+ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dev,
+ 		       const struct in6_addr *daddr, unsigned int srcprefs,
++			   void *pvd,
+ 		       struct in6_addr *saddr);
+ int __ipv6_get_lladdr(struct inet6_dev *idev, struct in6_addr *addr,
+ 		      u32 banned_flags);
+@@ -99,14 +100,16 @@ void addrconf_join_solict(struct net_device *dev, const struct in6_addr *addr);
+ void addrconf_leave_solict(struct inet6_dev *idev, const struct in6_addr *addr);
+ 
+ void addrconf_add_linklocal(struct inet6_dev *idev,
+-			    const struct in6_addr *addr, u32 flags);
++			    const struct in6_addr *addr, u32 flags,
++				void *pvd);
+ 
+ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+ 				 const struct prefix_info *pinfo,
+ 				 struct inet6_dev *in6_dev,
+ 				 const struct in6_addr *addr, int addr_type,
+ 				 u32 addr_flags, bool sllao, bool tokenized,
+-				 __u32 valid_lft, u32 prefered_lft);
++				 __u32 valid_lft, u32 prefered_lft,
++				 void *pvd);
+ 
+ static inline void addrconf_addr_eui48_base(u8 *eui, const char *const addr)
+ {
+@@ -257,7 +260,8 @@ static inline bool ipv6_is_mld(struct sk_buff *skb, int nexthdr, int offset)
+ }
+ 
+ void addrconf_prefix_rcv(struct net_device *dev,
+-			 u8 *opt, int len, bool sllao);
++			 u8 *opt, int len, bool sllao,
++			 void *pvd);
+ 
+ /*
+  *	anycast prototypes (anycast.c)
+diff --git a/include/net/flow.h b/include/net/flow.h
+index f1624fd5b1d0..949f54187291 100644
+--- a/include/net/flow.h
++++ b/include/net/flow.h
+@@ -151,6 +151,10 @@ struct flowi6 {
+ #define fl6_mh_type		uli.mht.type
+ #define fl6_gre_key		uli.gre_key
+ 	__u32			mp_hash;
++#ifdef	CONFIG_NETPVD
++	void			*pvd;
++#define fl6_pvd			pvd
++#endif
+ } __attribute__((__aligned__(BITS_PER_LONG/8)));
+ 
+ struct flowidn {
+diff --git a/include/net/if_inet6.h b/include/net/if_inet6.h
+index d4088d1a688d..18c088bad9ed 100644
+--- a/include/net/if_inet6.h
++++ b/include/net/if_inet6.h
+@@ -42,6 +42,7 @@ enum {
+ struct inet6_ifaddr {
+ 	struct in6_addr		addr;
+ 	__u32			prefix_len;
++	void			*pvd;
+ 
+ 	/* In seconds, relative to tstamp. Expiry is at tstamp + HZ * lft. */
+ 	__u32			valid_lft;
+diff --git a/include/net/ip6_fib.h b/include/net/ip6_fib.h
+index 10c913816032..69225761750f 100644
+--- a/include/net/ip6_fib.h
++++ b/include/net/ip6_fib.h
+@@ -65,6 +65,10 @@ struct fib6_config {
+ 	struct nl_info	fc_nlinfo;
+ 	struct nlattr	*fc_encap;
+ 	u16		fc_encap_type;
++
++#ifdef	CONFIG_NETPVD
++	void		*fc_pvd;
++#endif
+ };
+ 
+ struct fib6_node {
+@@ -172,6 +176,12 @@ struct rt6_info {
+ 	u8				rt6i_protocol;
+ 	u8				exception_bucket_flushed:1,
+ 					unused:7;
++	/*
++	 * TODO : check if adding fields in this structure
++	 * does not trash cache lines (CONFIG_NETPVD)
++	 */
++	 /* WQ: why not englobed in CONFIG_NETPVD*/
++	void 				*rt6i_pvd;	
+ };
+ 
+ #define for_each_fib6_node_rt_rcu(fn)					\
+diff --git a/include/net/ip6_route.h b/include/net/ip6_route.h
+index 18e442ea93d8..5de369848059 100644
+--- a/include/net/ip6_route.h
++++ b/include/net/ip6_route.h
+@@ -35,6 +35,9 @@ struct route_info {
+ #define RT6_LOOKUP_F_SRCPREF_PUBLIC	0x00000010
+ #define RT6_LOOKUP_F_SRCPREF_COA	0x00000020
+ #define RT6_LOOKUP_F_IGNORE_LINKSTATE	0x00000040
++#ifdef	CONFIG_NETPVD
++#define	RT6_LOOKUP_F_PVD		0x00000080
++#endif
+ 
+ /* We do not (yet ?) support IPv6 jumbograms (RFC 2675)
+  * Unlike IPv4, hdr->seg_len doesn't include the IPv6 header
+@@ -104,6 +107,7 @@ void rt6_age_exceptions(struct rt6_info *rt, struct fib6_gc_args *gc_args,
+ static inline int ip6_route_get_saddr(struct net *net, struct rt6_info *rt,
+ 				      const struct in6_addr *daddr,
+ 				      unsigned int prefs,
++					  void *pvd,
+ 				      struct in6_addr *saddr)
+ {
+ 	struct inet6_dev *idev =
+@@ -114,7 +118,7 @@ static inline int ip6_route_get_saddr(struct net *net, struct rt6_info *rt,
+ 		*saddr = rt->rt6i_prefsrc.addr;
+ 	else
+ 		err = ipv6_dev_get_saddr(net, idev ? idev->dev : NULL,
+-					 daddr, prefs, saddr);
++					 daddr, prefs, pvd, saddr);
+ 
+ 	return err;
+ }
+@@ -128,7 +132,9 @@ struct dst_entry *icmp6_dst_alloc(struct net_device *dev, struct flowi6 *fl6);
+ void fib6_force_start_gc(struct net *net);
+ 
+ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+-				    const struct in6_addr *addr, bool anycast);
++				    const struct in6_addr *addr,
++					void *pvd,	/* CONFIG_NETPVD */
++					bool anycast);
+ 
+ struct rt6_info *ip6_dst_alloc(struct net *net, struct net_device *dev,
+ 			       int flags);
+@@ -145,7 +151,11 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
+ void rt6_purge_dflt_routers(struct net *net);
+ 
+ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+-		  const struct in6_addr *gwaddr);
++		  const struct in6_addr *gwaddr,
++		   void *pvd);  /* CONFIG_NETPVD */
++int ip6_route_pvd_attach(struct sock *sk,
++						 char __user *optval,
++						 int optlen);
+ 
+ void ip6_update_pmtu(struct sk_buff *skb, struct net *net, __be32 mtu, int oif,
+ 		     u32 mark, kuid_t uid);
+diff --git a/include/net/ipv6.h b/include/net/ipv6.h
+index 221238254eb7..550677f370b3 100644
+--- a/include/net/ipv6.h
++++ b/include/net/ipv6.h
+@@ -378,6 +378,14 @@ static inline bool ipv6_accept_ra(struct inet6_dev *idev)
+ 	    idev->cnf.accept_ra;
+ }
+ 
++#ifdef CONFIG_NETPVD
++static inline bool ipv6_parse_pvd(struct inet6_dev *idev)
++{
++	return ipv6_accept_ra(idev) ? idev->cnf.parse_pvd : false;
++}
++#endif
++
++
+ #if IS_ENABLED(CONFIG_IPV6)
+ static inline int ip6_frag_mem(struct net *net)
+ {
+diff --git a/include/net/ndisc.h b/include/net/ndisc.h
+index ddfbb591e2c5..6e146fbab4c1 100644
+--- a/include/net/ndisc.h
++++ b/include/net/ndisc.h
+@@ -38,6 +38,9 @@ enum {
+ 	ND_OPT_RDNSS = 25,		/* RFC5006 */
+ 	ND_OPT_DNSSL = 31,		/* RFC6106 */
+ 	ND_OPT_6CO = 34,		/* RFC6775 */
++#ifdef CONFIG_NETPVD
++	ND_OPT_PVDID = 21,		/* temporary allocation from IANA*/
++#endif
+ 	__ND_OPT_MAX
+ };
+ 
+@@ -53,6 +56,9 @@ enum {
+ #include <linux/if_arp.h>
+ #include <linux/netdevice.h>
+ #include <linux/hash.h>
++#ifdef CONFIG_NETPVD
++#include<net/pvd.h>
++#endif
+ 
+ #include <net/neighbour.h>
+ 
+@@ -103,6 +109,14 @@ struct nd_opt_hdr {
+ 	__u8		nd_opt_len;
+ } __packed;
+ 
++struct nd_opt_pvdid {
++	uint8_t nd_opt_pvdid_type;
++	uint8_t nd_opt_pvdid_len;
++	uint16_t nd_opt_pvdid_flags;
++	uint16_t nd_opt_pvdid_sequence_number;
++	unsigned char nd_opt_pvdid_name[];
++};
++
+ /* ND options */
+ struct ndisc_options {
+ 	struct nd_opt_hdr *nd_opt_array[__ND_OPT_ARRAY_MAX];
+@@ -115,6 +129,9 @@ struct ndisc_options {
+ #if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
+ 	struct nd_opt_hdr *nd_802154_opt_array[ND_OPT_TARGET_LL_ADDR + 1];
+ #endif
++#ifdef	CONFIG_NETPVD
++	struct nd_opt_hdr *nd_opt_pvdid;
++#endif
+ };
+ 
+ #define nd_opts_src_lladdr		nd_opt_array[ND_OPT_SOURCE_LL_ADDR]
+@@ -129,6 +146,24 @@ struct ndisc_options {
+ 
+ #define NDISC_OPT_SPACE(len) (((len)+2+7)&~7)
+ 
++#ifdef CONFIG_NETPVD
++/* datastruct for PvD option parsing */
++struct pvd_header {
++	char pvdname[PVDNAMSIZ];
++	int pvd_sequence_number;
++	int pvd_h_flag;
++	int pvd_l_flag;
++	/* introduced in draft 01, when set in RA message, 
++	this variable indicates the offset in unit of byte 
++	to reach RA header from the beginning of the PvD option, when a flag set;
++	otherwise it equals to 0. */
++	int pvd_a_flag;
++	/* the offset in byte from the beginning of the PvD option to the next RA option 
++	helps skip PvD header and PvD ID (floating length) in option iterator */
++	int offset_to_opt;	
++};
++#endif
++
+ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
+ 					  u8 *opt, int opt_len,
+ 					  struct ndisc_options *ndopts);
+@@ -216,7 +251,8 @@ struct ndisc_ops {
+ 				       int addr_type, u32 addr_flags,
+ 				       bool sllao, bool tokenized,
+ 				       __u32 valid_lft, u32 prefered_lft,
+-				       bool dev_addr_generated);
++				       bool dev_addr_generated,
++					   void *pvd);
+ };
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+@@ -296,7 +332,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+ 						 bool sllao, bool tokenized,
+ 						 __u32 valid_lft,
+ 						 u32 prefered_lft,
+-						 bool dev_addr_generated)
++						 bool dev_addr_generated,
++						 void *pvd)
+ {
+ 	if (dev->ndisc_ops && dev->ndisc_ops->prefix_rcv_add_addr)
+ 		dev->ndisc_ops->prefix_rcv_add_addr(net, dev, pinfo, in6_dev,
+@@ -304,7 +341,8 @@ static inline void ndisc_ops_prefix_rcv_add_addr(struct net *net,
+ 						    addr_flags, sllao,
+ 						    tokenized, valid_lft,
+ 						    prefered_lft,
+-						    dev_addr_generated);
++						    dev_addr_generated,
++							pvd);
+ }
+ #endif
+ 
+diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
+index 049008493faf..64ef88281824 100644
+--- a/include/net/net_namespace.h
++++ b/include/net/net_namespace.h
+@@ -42,11 +42,15 @@ struct ctl_table_header;
+ struct net_generic;
+ struct sock;
+ struct netns_ipvs;
+-
++struct pvd;	/* anonymous */ /*WQ: CONFIG_NETPVD?*/
+ 
+ #define NETDEV_HASHBITS    8
+ #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
+ 
++#ifdef	CONFIG_NETPVD
++#include <linux/pvd-user.h>
++#endif
++
+ struct net {
+ 	refcount_t		passive;	/* To decided when the network
+ 						 * namespace should be freed.
+@@ -86,6 +90,42 @@ struct net {
+ 	int			ifindex;
+ 	unsigned int		dev_unreg_count;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * Pvd related info
++	 * pvdindex : sequence number used to allocate a unique
++	 * number to each pvd
++	 *
++	 * pvd_free_slots[] is a linked list of indexes (each cell
++	 * contains the index of the next free pvd slot). first_free_pvd_ix
++	 * is the index of the first free slot (-1 means no more slots)
++	 *
++	 * pvd_used_slots[] is an array of pointer to active pvd
++	 * structures. The pvd structures are linked together via
++	 * a next field. first_used_pvd points to the head of the
++	 * pvd current list. The pvd_used_slots[] is used to perform
++	 * consistency checks on pvds, and not (for now) to list
++	 * them
++	 *
++	 * If a slot is not part of the pvd_free_slots[] list,
++	 * then its pvd_used_slots[] entry points to a pvd
++	 */
++	unsigned int		pvd_base_seq;	/* protected by rtnl_mutex */
++	u32			pvdindex;
++	void			*pvd_used_slots[MAXPVD];/* struct net_pvd *[] */
++	void			*first_used_pvd;	/* struct net_pvd * */
++	int			pvd_free_slots[MAXPVD];	/* array of indexes */
++	int			first_free_pvd_ix;	/* index */
++	unsigned int		pvd_unreg_count;
++
++	void			*pvd_cached_ra;
++
++	struct timer_list	pvd_timer;
++#ifdef CONFIG_PROC_FS
++	struct proc_dir_entry	*proc_pvdd;
++#endif
++#endif	/* CONFIG_NETPVD */
++
+ 	/* core fib_rules */
+ 	struct list_head	rules_ops;
+ 
+diff --git a/include/net/pvd.h b/include/net/pvd.h
+new file mode 100644
+index 000000000000..fda05c9ecc3e
+--- /dev/null
++++ b/include/net/pvd.h
+@@ -0,0 +1,208 @@
++
++#ifndef	_NET_PVD_H
++#define	_NET_PVD_H
++
++#ifdef	CONFIG_NETPVD
++
++#include <net/net_namespace.h>
++#include <linux/percpu.h>
++#include <linux/hash.h>
++#include <linux/list.h>
++#include <linux/rculist.h>
++
++#include <linux/pvd-user.h>
++
++/*
++ * In the net_pvd structure below, the pvdindex and
++ * _index fields may be combined to form a full index
++ * The full index, in turn, can be used to check a
++ * pvd handle consistency/validity. Socket bound to
++ * a set of pvds are referencing these pvds by full
++ * indexes
++ *
++ * If name[0] == '\0' (ie, empty name), then the
++ * pvd is an implicit PvD. In this case, the lla and
++ * dev fields uniquely identify the PvD
++ */
++
++struct net_pvd {
++	struct net_pvd		*next;
++
++	char			name[PVDNAMSIZ];
++	struct hlist_node	name_hlist;
++	int __percpu		*pcpu_refcnt;
++	u32			pvdindex;	/* unique number */
++	int			_index;		/* index in net->pvd_used_slots */
++	int			notifications_blocked;
++
++	/*
++	 * Attributes of the pvd
++	 */
++	int			sequence_number;
++	int			h_flag;
++	int			l_flag;
++	int 		a_flag;  /* introduced in draft 01 */
++	int			implicit_flag;
++
++	/*
++	 * Lot of cross references to other structures belonging to
++	 * this PvD. We have to make sure that we are not referencing
++	 * released pointers (dev, lla, etc.)
++	 */
++	possible_net_t		nd_net;
++
++	struct net_device	*dev;	/* the device it has been received on */
++	struct in6_addr		lla;	/* the associated router lla */
++	int			nroutes;
++	struct rt6_info		*routes[MAXROUTESPERPVD];
++	int			naddresses;
++	struct inet6_ifaddr	*addresses[MAXADDRPERPVD];
++	
++	/*
++	 * The user options below have no existence somewhere
++	 * in the kernel. They are just stored here to
++	 * be provided to the applications
++	 */
++	int			ndnssl;
++	char			*dnssl[MAXDNSSLPERPVD];
++	unsigned long		dnsslExpire[MAXDNSSLPERPVD];
++
++
++	int			nrdnss;
++	struct in6_addr		rdnss[MAXRDNSSPERPVD];
++	unsigned long		rdnssExpire[MAXRDNSSPERPVD];
++
++#ifdef CONFIG_NETPVD
++	/*
++	 * pvd.d/
++	 * 	<pvdname>/
++	 * 		attrs
++	 * 		routes
++	 * 		addrs
++	 * 		sockets
++	 */
++	struct proc_dir_entry 	*proc_pvd;		/* dir */
++	struct proc_dir_entry 	*proc_pvd_attrs;	/* file */
++	struct proc_dir_entry 	*proc_pvd_routes;	/* file */
++	struct proc_dir_entry 	*proc_pvd_addrs;	/* file */
++	struct proc_dir_entry 	*proc_pvd_rdnss;	/* file */
++	struct proc_dir_entry 	*proc_pvd_dnssl;	/* file */
++	struct proc_dir_entry 	*proc_pvd_sockets;	/* file */
++#endif
++};
++
++/*
++ * Bound PvDs. Binding to a set of PvDs can be done at 3 different hierarchical levels
++ * 1) the socket
++ * 2) the thread
++ * 3) the process
++ *
++ * We define here a structure that can be shared between these 3 levels
++ */
++struct kernel_bind_to_pvd {
++	int			refcnt;
++	struct bind_to_pvd	btp;
++};
++
++
++/**
++ *	pvd_put - release reference to pvd
++ *	@pvd: pvd
++ *
++ * Release reference to pvd to allow it to be freed.
++ */
++static inline void pvd_put(struct net_pvd *pvd)
++{
++	if (pvd != NULL) {
++		this_cpu_dec(*pvd->pcpu_refcnt);
++	}
++}
++
++/**
++ *	pvd_hold - get reference to pvd
++ *	@pvd: pvd
++ *
++ * Hold reference to pvd to keep it from being freed.
++ */
++static inline struct net_pvd *pvd_hold(struct net_pvd *pvd)
++{
++	if (pvd != NULL) {
++		this_cpu_inc(*pvd->pcpu_refcnt);
++	}
++	return pvd;
++}
++
++/*
++ * Net namespace inlines
++ */
++static inline
++struct net *pvd_net(const struct net_pvd *pvd)
++{
++	return read_pnet(&pvd->nd_net);
++}
++
++static inline
++void pvd_net_set(struct net_pvd *pvd, struct net *net)
++{
++	write_pnet(&pvd->nd_net, net);
++}
++
++extern void	pvd_rtnl_notify(struct net_pvd *pvd, int state);
++extern void	pvd_register_dnssl(struct net_pvd *pvd, void *dnssl_opt);
++extern void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt);
++extern int pvd_migrate_route(
++		struct net_pvd *newpvd,
++		struct rt6_info *rt);
++extern int pvd_migrate_addr(
++		struct net_pvd *newpvd,
++		struct inet6_ifaddr *addr);
++extern struct net_pvd *register_pvd(
++				struct net *net,
++				char *pvdname,
++				struct net_device *dev,
++				struct in6_addr *lla);
++extern void unregister_pvd(struct net_pvd *pvd);
++extern struct net_pvd *pvd_get_by_name_rcu(
++				struct net *net,
++				const char *pvdname,
++				struct net_device *dev,
++				struct in6_addr *lla);
++extern struct net_pvd *pvd_get_by_name(
++				struct net *net,
++				const char *pvdname,
++				struct net_device *dev,
++				struct in6_addr *lla);
++extern int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex);
++extern struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex);
++extern int pvd_get_fullindex(struct net_pvd *pvd);
++extern int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd);
++extern int sock_getbindtopvd(struct sock *sk, char __user *optval,
++				int __user *optlen, int len);
++extern int sock_setbindtopvd(struct sock *sk, char __user *optval,
++				int optlen);
++extern int sock_getpvdattr(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len);
++
++extern int sock_createpvd(
++		struct sock *sk,
++		char __user *optval,
++		int optlen);
++
++extern int sock_getpvdlist(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len);
++
++extern int sock_getralist(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len);
++
++#endif		/* CONFIG_NETPVD */
++
++#endif		/* _NET_PVD_H */
+diff --git a/include/net/sock.h b/include/net/sock.h
+index 7a7b14e9628a..447332488921 100644
+--- a/include/net/sock.h
++++ b/include/net/sock.h
+@@ -131,6 +131,7 @@ typedef __u64 __bitwise __addrpair;
+  *	@skc_reuse: %SO_REUSEADDR setting
+  *	@skc_reuseport: %SO_REUSEPORT setting
+  *	@skc_bound_dev_if: bound device index if != 0
++ *	@skc_bound_pvd_ix: bound pvd index if != 0
+  *	@skc_bind_node: bind hash linkage for various protocol lookup tables
+  *	@skc_portaddr_node: second hash linkage for UDP/UDP-Lite protocol
+  *	@skc_prot: protocol handlers inside a network family
+@@ -178,6 +179,10 @@ struct sock_common {
+ 	unsigned char		skc_ipv6only:1;
+ 	unsigned char		skc_net_refcnt:1;
+ 	int			skc_bound_dev_if;
++#ifdef	CONFIG_NETPVD
++	int			skc_pvd_bind_type;	/* 0 : inherit, 1 : unset, 2 : set */
++	int			skc_bound_pvd;		/* pvd index if type == 2 */
++#endif
+ 	union {
+ 		struct hlist_node	skc_bind_node;
+ 		struct hlist_node	skc_portaddr_node;
+@@ -342,6 +347,8 @@ struct sock {
+ #define sk_ipv6only		__sk_common.skc_ipv6only
+ #define sk_net_refcnt		__sk_common.skc_net_refcnt
+ #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
++#define sk_pvd_bind_type	__sk_common.skc_pvd_bind_type
++#define sk_bound_pvd		__sk_common.skc_bound_pvd
+ #define sk_bind_node		__sk_common.skc_bind_node
+ #define sk_prot			__sk_common.skc_prot
+ #define sk_net			__sk_common.skc_net
+diff --git a/include/uapi/asm-generic/socket.h b/include/uapi/asm-generic/socket.h
+index 0ae758c90e54..bcb26abd7b5f 100644
+--- a/include/uapi/asm-generic/socket.h
++++ b/include/uapi/asm-generic/socket.h
+@@ -107,4 +107,11 @@
+ 
+ #define SO_ZEROCOPY		60
+ 
++/* PVD specific options (FIXME : probably not the best place) */
++#define	SO_BINDTOPVD		61
++#define	SO_GETPVDLIST		62
++#define	SO_GETPVDATTRIBUTES	63
++#define	SO_CREATEPVD		64
++
++
+ #endif /* __ASM_GENERIC_SOCKET_H */
+diff --git a/include/uapi/linux/if_addr.h b/include/uapi/linux/if_addr.h
+index 2ef053d265de..303683af0a65 100644
+--- a/include/uapi/linux/if_addr.h
++++ b/include/uapi/linux/if_addr.h
+@@ -33,6 +33,7 @@ enum {
+ 	IFA_CACHEINFO,
+ 	IFA_MULTICAST,
+ 	IFA_FLAGS,
++	IFA_PVD,
+ 	__IFA_MAX,
+ };
+ 
+diff --git a/include/uapi/linux/ipv6.h b/include/uapi/linux/ipv6.h
+index 9c0f4a92bcff..7106b27d3aa2 100644
+--- a/include/uapi/linux/ipv6.h
++++ b/include/uapi/linux/ipv6.h
+@@ -187,6 +187,7 @@ enum {
+ 	DEVCONF_DISABLE_POLICY,
+ 	DEVCONF_ACCEPT_RA_RT_INFO_MIN_PLEN,
+ 	DEVCONF_NDISC_TCLASS,
++	DEVCONF_PARSE_PVD,
+ 	DEVCONF_MAX
+ };
+ 
+diff --git a/include/uapi/linux/pvd-user.h b/include/uapi/linux/pvd-user.h
+new file mode 100644
+index 000000000000..0c20509e20fe
+--- /dev/null
++++ b/include/uapi/linux/pvd-user.h
+@@ -0,0 +1,190 @@
++/*
++ * This header file contains definitions for use when exchanging
++ * data with the user space
++ *
++ * The same file will also be installed for use by user space
++ * applications
++ *
++ * SO_BINDTOPVD and Co are defined in another uapi header file
++ * (asm-generic/socket.h)
++ */
++#ifndef	_UAPI_LINUX_PVD_USER_H
++#define	_UAPI_LINUX_PVD_USER_H
++
++#include <linux/in6.h>
++#ifndef __KERNEL__
++#include <net/if.h>
++#else
++#include <linux/if.h>
++#endif
++#include <linux/ipv6_route.h>
++
++/*
++ * MAXPVD must be a power of 2
++ */
++#define	MAXPVDSHIFT	10	/* realistic upper bound */
++#define	MAXPVD		(1 << MAXPVDSHIFT)
++
++#ifndef	PVDNAMSIZ
++#define	PVDNAMSIZ	256
++#endif
++
++#ifndef	FQDNSIZ
++#define	FQDNSIZ		256
++#endif
++
++#ifndef MAXADDRPERPVD
++#define	MAXADDRPERPVD	32
++#endif
++
++#ifndef MAXROUTESPERPVD
++#define	MAXROUTESPERPVD	32
++#endif
++
++#ifndef	MAXDNSSLPERPVD
++#define	MAXDNSSLPERPVD	4
++#endif
++
++#ifndef	MAXRDNSSPERPVD
++#define	MAXRDNSSPERPVD	4
++#endif
++
++/*
++ * For SO_GETPVDATTRIBUTES (which returns the attributes for a pvd)
++ *
++ * The net_pvd_attribute structure below is a copy of the
++ * kernel space pvd structure, with kernel specific items
++ * removed
++ */
++struct net_pvd_route {
++	struct in6_addr	dst;
++	struct in6_addr gateway;
++	char dev_name[IFNAMSIZ];
++};
++
++struct net_pvd_attribute {
++	char			name[PVDNAMSIZ];
++	int			index;	/* unique number */
++
++	/*
++	 * Attributes of the pvd
++	 */
++	int			sequence_number;
++	int			h_flag;
++	int			l_flag;
++	int 		a_flag;  /* introduced in draft 01 */
++	int			implicit_flag;
++	struct in6_addr		lla;
++	char			dev[IFNAMSIZ];
++
++	/*
++	 * Induced attributes
++	 */
++	int			nroutes;
++	struct net_pvd_route	routes[MAXROUTESPERPVD];
++	int			naddresses;
++	struct in6_addr		addresses[MAXADDRPERPVD];
++	int			addr_prefix_len[MAXADDRPERPVD];
++
++	int			ndnssl;
++	char			dnssl[MAXDNSSLPERPVD][FQDNSIZ];
++
++	int			nrdnss;
++	struct in6_addr		rdnss[MAXRDNSSPERPVD];
++};
++
++struct pvd_attr {
++	char __user *pvdname;	/* in */
++	struct net_pvd_attribute *pvdattr;	/* out */
++};
++
++/*
++ * For SO_GETPVDLIST (returns the list of pvds)
++ */
++struct pvd_list {
++	int npvd;	/* in/out */
++	char pvds[MAXPVD][PVDNAMSIZ];
++};
++
++/*
++ * For SO_BINDTOPVD (set and get)
++ */
++#define	PVD_BIND_SCOPE_SOCKET	0
++#define	PVD_BIND_SCOPE_THREAD	1
++#define	PVD_BIND_SCOPE_PROCESS	2
++
++#define	PVD_BIND_INHERIT	0
++#define	PVD_BIND_NOPVD		1
++#define	PVD_BIND_ONEPVD		2
++
++struct bind_to_pvd {
++	int scope;	/* PVD_BIND_SCOPE_XXX */
++	int bindtype;	/* PVD_BIND_INHERIT, ... */
++	char pvdname[PVDNAMSIZ];
++};
++
++/*
++ * For SO_CREATEPVD
++ */
++struct create_pvd {
++	char pvdname[PVDNAMSIZ];
++	int flag;	/* mask : see below PVD_ATTR_XXX */
++	int sequence_number;
++	int h_flag;
++	int l_flag;
++	int deprecated;
++};
++
++#define	PVD_ATTR_SEQNUMBER	0x01
++#define	PVD_ATTR_HFLAG		0x02
++#define	PVD_ATTR_LFLAG		0x04
++#define	PVD_ATTR_DEPRECATED	0x08
++
++/*
++ * RTNETLINK related definitions
++ */
++/********************************************************************
++ *		PvD description
++ *		This is used to notify a change in a PvD
++ *		Application may then query the attributes for the
++ *		notified PvD using an alternate API
++ ****/
++
++struct pvdmsg {
++	char	pvd_name[PVDNAMSIZ];
++	int	pvd_state;	/* NEW, UPDATE, DEL */
++};
++
++enum {
++	/*
++	 * PVD_NEW and PVD_UPDATE will certainly be handled in the same way
++	 * by application
++	 */
++	PVD_NEW,
++	PVD_UPDATE,
++	PVD_DEL
++};
++
++struct rdnssmsg {
++	char		pvd_name[PVDNAMSIZ];
++	struct in6_addr	rdnss;
++	int		rdnss_state;	/* NEW, DEL */
++};
++
++enum {
++	RDNSS_NEW,
++	RDNSS_DEL
++};
++
++struct dnsslmsg {
++	char	pvd_name[PVDNAMSIZ];
++	char	dnssl[FQDNSIZ];
++	int	dnssl_state;	/* NEW, DEL */
++};
++
++enum {
++	DNSSL_NEW,
++	DNSSL_DEL
++};
++
++#endif		/* _UAPI_LINUX_PVD_USER_H */
+diff --git a/include/uapi/linux/rtnetlink.h b/include/uapi/linux/rtnetlink.h
+index 843e29aa3cac..cc99e8b78cb9 100644
+--- a/include/uapi/linux/rtnetlink.h
++++ b/include/uapi/linux/rtnetlink.h
+@@ -150,6 +150,13 @@ enum {
+ 	RTM_NEWCACHEREPORT = 96,
+ #define RTM_NEWCACHEREPORT RTM_NEWCACHEREPORT
+ 
++	RTM_PVDSTATUS = 100,
++#define RTM_PVDSTATUS RTM_PVDSTATUS
++	RTM_RDNSS = 101,
++#define RTM_RDNSS RTM_RDNSS
++	RTM_DNSSL = 102,
++#define RTM_DNSSL RTM_DNSSL
++
+ 	__RTM_MAX,
+ #define RTM_MAX		(((__RTM_MAX + 3) & ~3) - 1)
+ };
+@@ -327,6 +334,7 @@ enum rtattr_type_t {
+ 	RTA_PAD,
+ 	RTA_UID,
+ 	RTA_TTL_PROPAGATE,
++	RTA_PVD,
+ 	__RTA_MAX
+ };
+ 
+@@ -677,6 +685,8 @@ enum rtnetlink_groups {
+ #define RTNLGRP_IPV4_MROUTE_R	RTNLGRP_IPV4_MROUTE_R
+ 	RTNLGRP_IPV6_MROUTE_R,
+ #define RTNLGRP_IPV6_MROUTE_R	RTNLGRP_IPV6_MROUTE_R
++	RTNLGRP_PVD,
++#define RTNLGRP_PVD		RTNLGRP_PVD
+ 	__RTNLGRP_MAX
+ };
+ #define RTNLGRP_MAX	(__RTNLGRP_MAX - 1)
+diff --git a/kernel/configs/kvm_guest.config b/kernel/configs/kvm_guest.config
+index 8d9643767142..00b46f315c2e 100644
+--- a/kernel/configs/kvm_guest.config
++++ b/kernel/configs/kvm_guest.config
+@@ -1,6 +1,7 @@
+ CONFIG_NET=y
+ CONFIG_NET_CORE=y
+ CONFIG_NETDEVICES=y
++CONFIG_NETPVD=y
+ CONFIG_BLOCK=y
+ CONFIG_BLK_DEV=y
+ CONFIG_NETWORK_FILESYSTEMS=y
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 995453d9fb55..b3c8217fd772 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -864,7 +864,14 @@ void __noreturn do_exit(long code)
+ 	exit_task_namespaces(tsk);
+ 	exit_task_work(tsk);
+ 	exit_thread(tsk);
+-
++	
++#ifdef	CONFIG_NETPVD
++	if (tsk->bound_pvd != ((void *) 0) &&
++	    tsk->bound_pvd != ((void *) -1)) {
++		kfree(tsk->bound_pvd);
++		tsk->bound_pvd = NULL;
++	}
++#endif
+ 	/*
+ 	 * Flush inherited counters to the parent - before the parent
+ 	 * gets woken up by child-exit notifications.
+diff --git a/kernel/fork.c b/kernel/fork.c
+index ef641b54e22b..0c9e0c826b76 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -551,6 +551,15 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
+ 	if (err)
+ 		goto free_stack;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * The new structure must inherit pvd from its parent (to avoid
++	 * keeping a kstrdup() pointer in multiple structures)
++	 */
++	tsk->bound_pvd = (void *) 0;
++#endif
++
++
+ #ifdef CONFIG_SECCOMP
+ 	/*
+ 	 * We must handle setting up seccomp filters once we're under
+diff --git a/net/6lowpan/core.c b/net/6lowpan/core.c
+index 40d3d72beb53..f83f3c110068 100644
+--- a/net/6lowpan/core.c
++++ b/net/6lowpan/core.c
+@@ -135,7 +135,7 @@ static int lowpan_event(struct notifier_block *unused,
+ 		    addrconf_ifid_802154_6lowpan(addr.s6_addr + 8, dev) == 0) {
+ 			__ipv6_addr_set_half(&addr.s6_addr32[0],
+ 					     htonl(0xFE800000), 0);
+-			addrconf_add_linklocal(idev, &addr, 0);
++			addrconf_add_linklocal(idev, &addr, 0, NULL); /* FIXME : pvd == NULL ? */
+ 		}
+ 		break;
+ 	case NETDEV_DOWN:
+diff --git a/net/6lowpan/ndisc.c b/net/6lowpan/ndisc.c
+index 941df2fa4448..cf534cc81ad6 100644
+--- a/net/6lowpan/ndisc.c
++++ b/net/6lowpan/ndisc.c
+@@ -208,7 +208,8 @@ static void lowpan_ndisc_prefix_rcv_add_addr(struct net *net,
+ 					     bool sllao, bool tokenized,
+ 					     __u32 valid_lft,
+ 					     u32 prefered_lft,
+-					     bool dev_addr_generated)
++					     bool dev_addr_generated,
++						 void *pvd)
+ {
+ 	int err;
+ 
+@@ -218,7 +219,8 @@ static void lowpan_ndisc_prefix_rcv_add_addr(struct net *net,
+ 		err = addrconf_prefix_rcv_add_addr(net, dev, pinfo, in6_dev,
+ 						   addr, addr_type, addr_flags,
+ 						   sllao, tokenized, valid_lft,
+-						   prefered_lft);
++						   prefered_lft,
++						   pvd);
+ 		if (err)
+ 			ND_PRINTK(2, warn,
+ 				  "RA: could not add a short address based address for prefix: %pI6c\n",
+diff --git a/net/bridge/br_multicast.c b/net/bridge/br_multicast.c
+index cb4729539b82..b160e967a617 100644
+--- a/net/bridge/br_multicast.c
++++ b/net/bridge/br_multicast.c
+@@ -501,6 +501,7 @@ static struct sk_buff *br_ip6_multicast_alloc_query(struct net_bridge *br,
+ 	ip6h->hop_limit = 1;
+ 	ipv6_addr_set(&ip6h->daddr, htonl(0xff020000), 0, 0, htonl(1));
+ 	if (ipv6_dev_get_saddr(dev_net(br->dev), br->dev, &ip6h->daddr, 0,
++			       /* PvD*/ NULL,
+ 			       &ip6h->saddr)) {
+ 		kfree_skb(skb);
+ 		br->has_ipv6_addr = 0;
+diff --git a/net/core/Makefile b/net/core/Makefile
+index 1fd0a9c88b1b..ab832e23bc77 100644
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -30,3 +30,4 @@ obj-$(CONFIG_DST_CACHE) += dst_cache.o
+ obj-$(CONFIG_HWBM) += hwbm.o
+ obj-$(CONFIG_NET_DEVLINK) += devlink.o
+ obj-$(CONFIG_GRO_CELLS) += gro_cells.o
++obj-$(CONFIG_NETPVD) += pvd.o
+\ No newline at end of file
+diff --git a/net/core/pvd.c b/net/core/pvd.c
+new file mode 100644
+index 000000000000..5bd269e3d507
+--- /dev/null
++++ b/net/core/pvd.c
+@@ -0,0 +1,2377 @@
++/*
++ */
++
++/*
++ * TODO : have a growable array of pvds in the struct net structure
++ */
++#include <net/net_namespace.h>
++#include <linux/netdevice.h>
++#include <linux/rtnetlink.h>
++#include <linux/percpu.h>
++#include <linux/hash.h>
++#include <linux/list.h>
++#include <linux/timer.h>
++#include <linux/rculist.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <net/sock.h>
++
++#include <linux/inet.h>
++#include <linux/net.h>
++#include <linux/route.h>
++#include <linux/netdevice.h>
++#include <linux/in6.h>
++#include <net/ipv6.h>
++#include <net/ip6_fib.h>
++#include <net/ip6_route.h>
++
++#include <linux/if_addr.h>
++#include <linux/if_arp.h>
++#include <linux/ipv6.h>
++#include <linux/icmpv6.h>
++#include <net/ipv6.h>
++#include <net/ip6_fib.h>
++#include <net/ip6_route.h>
++
++#include <net/pvd.h>
++#include <linux/pvd-user.h>
++
++#ifdef	CONFIG_NETPVD
++
++#define	DIM(t)	(sizeof(t) / sizeof(t[0]))
++
++/*
++ * PTR values for the bound_pvd field of struct task
++ */
++#define	FORCE_NO_PVD_PTR	((void *) -1)
++#define	INHERIT_PVD_PTR		((void *) 0)
++
++#define	MAXPVDINDEX	(1 << (32 - MAXPVDSHIFT))
++#define	_TABIDX(f)	((f) & ((1 << MAXPVDSHIFT) - 1))
++#define	_UNIQIDX(f)	(((f) >> MAXPVDSHIFT) & (MAXPVDINDEX - 1))
++
++struct nd_opt_rdnss_info {
++	uint8_t nd_opt_rdnssi_type;
++	uint8_t nd_opt_rdnssi_len;
++	uint16_t nd_opt_rdnssi_pref_flag_reserved;
++	uint32_t nd_opt_rdnssi_lifetime;
++	struct in6_addr nd_opt_rdnssi_addr1;
++	struct in6_addr nd_opt_rdnssi_addr2;
++	struct in6_addr nd_opt_rdnssi_addr3;
++};
++
++struct nd_opt_dnssl_info {
++	uint8_t nd_opt_dnssli_type;
++	uint8_t nd_opt_dnssli_len;
++	uint16_t nd_opt_dnssli_reserved;
++	uint32_t nd_opt_dnssli_lifetime;
++	unsigned char nd_opt_dnssli_suffixes[];
++};
++
++struct net_pvd *__pvd_get_by_name(
++			struct net *net,
++			const char *name,
++			struct net_device *dev,
++			struct in6_addr *lla);
++
++static seqcount_t pvd_rename_seq;
++
++static void pvd_check_lifetimes(struct timer_list *t);
++static struct net_pvd	*__register_pvd(
++				struct net *net,
++				char *pvdname,
++				struct net_device *dev,
++				struct in6_addr *lla);
++static void __unregister_pvd(struct net_pvd *pvd);
++
++/* Initialize per network namespace state */
++static int __net_init netpvd_init(struct net *net)
++{
++	int i;
++
++	timer_setup(&(net->pvd_timer), pvd_check_lifetimes, 0);
++
++	net->pvdindex = 0;
++
++	for (i = 0; i < MAXPVD; i++) {
++		net->pvd_free_slots[i] = i == MAXPVD - 1 ? -1 : i + 1;
++		net->pvd_used_slots[i] = NULL;
++	}
++	net->first_free_pvd_ix = 0;
++	net->first_used_pvd = NULL;
++
++	return 0;
++}
++
++static void __net_exit netpvd_exit(struct net *net)
++{
++	del_timer_sync(&net->pvd_timer);
++}
++
++static struct pernet_operations __net_initdata netpvd_net_ops = {
++	.init = netpvd_init,
++	.exit = netpvd_exit,
++};
++
++/*
++ * The @first_used_pvd list is protected by @pvd_base_lock and the rtnl
++ * semaphore.
++ *
++ * Pure readers hold pvd_base_lock for reading, or rcu_read_lock()
++ *
++ * Writers must hold the rtnl semaphore while they loop through the
++ * first_used_pvd list, and hold pvd_base_lock for writing when they do the
++ * actual updates.  This allows pure readers to access the list even
++ * while a writer is preparing to update it.
++ *
++ * To put it another way, pvd_base_lock is held for writing only to
++ * protect against pure readers; the rtnl semaphore provides the
++ * protection against other writers.
++ *
++ * See, for example usages, register_netdevice() and
++ * unregister_netdevice(), which must be called with the rtnl
++ * semaphore held.
++ */
++DEFINE_RWLOCK(pvd_base_lock);
++EXPORT_SYMBOL(pvd_base_lock);
++
++#ifdef CONFIG_PROC_FS
++
++static int pvd_attrs_seq_show(struct seq_file *seq, void *v)
++{
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++	char sAddr[64];
++
++	rcu_read_lock();
++
++	seq_printf(
++		seq,
++		"seq=%d h=%s l=%s a=%s index=%lu lla=%s dev=%s\n",
++		pvd->sequence_number,
++		pvd->h_flag ? "true" : "false",
++		pvd->l_flag ? "true" : "false",
++		pvd->a_flag ? "true" : "false",
++		(unsigned long) pvd_get_fullindex(pvd),
++		addr6tostr(pvd->lla.s6_addr, sAddr),
++		pvd->dev ? pvd->dev->name : "<nodev>");
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_attrs_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_attrs_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_attrs_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_attrs_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_routes_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->nroutes; i++) {
++		struct rt6_info *rt = pvd->routes[i];
++		char sAddr[64];
++		unsigned long lt;
++
++		seq_printf(seq, "%3d : ", i);
++		seq_printf(seq, "%s/%-3d ", 
++			   addr6tostr(rt->rt6i_dst.addr.s6_addr, sAddr),
++			   rt->rt6i_dst.plen);
++
++#ifdef CONFIG_IPV6_SUBTREES
++		seq_printf(seq, "%s/%-3d ",
++			   addr6tostr(rt->rt6i_src.addr.s6_addr, sAddr),
++			   rt->rt6i_src.plen);
++#else
++		seq_printf(seq, "0000:0000:0000:0000:0000:0000:0000:0000/00 ");
++#endif
++		if (rt->rt6i_flags & RTF_GATEWAY)
++			seq_printf(seq, "%s", addr6tostr(rt->rt6i_gateway.s6_addr, sAddr));
++		else
++			seq_puts(seq, "0000:0000:0000:0000:0000:0000:0000:0000");
++
++		lt = (rt->dst.expires - jiffies) / HZ;
++
++		seq_printf(seq, " %5u %3u %08x %8s (%ld)\n",
++			   rt->rt6i_metric,
++			   atomic_read(&rt->dst.__refcnt),
++			   rt->rt6i_flags,
++			   rt->dst.dev ? rt->dst.dev->name : "",
++			   rt->dst.expires == 0 || lt > 0xffff0000UL ? -1 : lt);
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_routes_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_routes_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_routes_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_routes_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_addrs_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->naddresses; i++) {
++		struct inet6_ifaddr *ifa = pvd->addresses[i];
++		char sAddr[64];
++
++		seq_printf(seq, "%3d : %s/%d %s (%p)\n", 
++			   i,
++			   addr6tostr(ifa->addr.s6_addr, sAddr),
++			   ifa->prefix_len,
++			   ifa->idev->dev->name,
++			   ifa);
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_addrs_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_addrs_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_addrs_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_addrs_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_rdnss_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->nrdnss; i++) {
++		char sAddr[64];
++
++		seq_printf(seq, "%3d : %s\n", 
++			   i,
++			   addr6tostr(pvd->rdnss[i].s6_addr, sAddr));
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_rdnss_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_rdnss_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_rdnss_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_rdnss_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_dnssl_seq_show(struct seq_file *seq, void *v)
++{
++	int i;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++
++	rcu_read_lock();
++
++	for (i = 0; i < pvd->ndnssl; i++) {
++		seq_printf(seq, "%3d :  %s\n", i, pvd->dnssl[i]);
++	}
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int pvd_dnssl_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_dnssl_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_dnssl_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_dnssl_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int pvd_sockets_seq_show(struct seq_file *seq, void *v)
++{
++	seq_printf(seq, "sockets : not implemented\n");
++
++	return 0;
++}
++
++static int pvd_sockets_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, pvd_sockets_seq_show, PDE_DATA(inode));
++}
++
++static const struct file_operations pvd_sockets_seq_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = pvd_sockets_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release,
++};
++
++static int register_proc_pvd(struct net *net, struct net_pvd *pvd)
++{
++	if (net->proc_pvdd == NULL) {
++		return -ENOENT;	/* should not happen */
++	}
++
++	if ((pvd->proc_pvd = proc_mkdir(pvd->name, net->proc_pvdd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_attrs = proc_create_data(
++					"attrs", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_attrs_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_routes = proc_create_data(
++					"routes", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_routes_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_addrs = proc_create_data(
++					"addrs", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_addrs_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_rdnss = proc_create_data(
++					"rdnss", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_rdnss_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_dnssl = proc_create_data(
++					"dnssl", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_dnssl_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	if ((pvd->proc_pvd_sockets = proc_create_data(
++					"sockets", S_IRUGO,
++					pvd->proc_pvd,
++					&pvd_sockets_seq_fops,
++					pvd)) == NULL) {
++		return -ENOENT;
++	}
++
++	return 0;
++}
++
++static int unregister_proc_pvd(struct net *net, struct net_pvd *pvd)
++{
++	if (net->proc_pvdd == NULL) {
++		return -ENOENT;
++	}
++	if (pvd->proc_pvd == NULL) {
++		return -EINVAL;
++	}
++	proc_remove(pvd->proc_pvd);
++	pvd->proc_pvd = NULL;
++	pvd->proc_pvd_attrs = NULL;
++	pvd->proc_pvd_routes = NULL;
++	pvd->proc_pvd_addrs = NULL;
++	pvd->proc_pvd_rdnss = NULL;
++	pvd->proc_pvd_dnssl = NULL;
++	pvd->proc_pvd_sockets = NULL;
++
++	return 0;
++}
++
++static int netpvd_seq_show(struct seq_file *seq, void *v)
++{
++	struct net *net = (struct net *) seq->private;
++	struct net_pvd *pvd;
++	char sAddr[64];
++
++	rtnl_lock();
++	rcu_read_lock();
++
++	for (pvd = net->first_used_pvd; pvd; pvd = pvd->next) {
++		seq_printf(
++			seq,
++			"name=%s seq=%d h=%s l=%s a=%s index=%lu lla=%s dev=%s\n",
++			pvd->name,
++			pvd->sequence_number,
++			pvd->h_flag ? "true" : "false",
++			pvd->l_flag ? "true" : "false",
++			pvd->a_flag ? "true" : "false",
++			(unsigned long) pvd_get_fullindex(pvd),
++			addr6tostr(pvd->lla.s6_addr, sAddr),
++			pvd->dev ? pvd->dev->name : "<nodev>");
++	}
++
++	rcu_read_unlock();
++	rtnl_unlock();
++
++	return 0;
++}
++
++static int netpvd_seq_open(struct inode *inode, struct file *file)
++{
++	return single_open_net(inode, file, netpvd_seq_show);
++}
++
++static const struct file_operations netpvd_proc_fops = {
++	.owner	 = THIS_MODULE,
++	.open	 = netpvd_seq_open,
++	.read	 = seq_read,
++	.llseek	 = seq_lseek,
++	.release = single_release_net,
++};
++
++static int __net_init netpvd_proc_init(struct net *net)
++{
++	if (! proc_create("pvd", 0, net->proc_net, &netpvd_proc_fops)) {
++		return -ENOMEM;
++	}
++
++	if ((net->proc_pvdd = proc_mkdir("pvd.d", net->proc_net)) == NULL) {
++		remove_proc_entry("pvd", net->proc_net);
++		return -ENOMEM;
++	}
++	return 0;
++}
++
++static void __net_exit netpvd_proc_exit(struct net *net)
++{
++	remove_proc_entry("pvd", net->proc_net);
++	remove_proc_entry("pvd.d", net->proc_net);
++}
++
++static struct pernet_operations netpvd_proc_ops = {
++	.init = netpvd_proc_init,
++	.exit = netpvd_proc_exit,
++};
++#endif
++
++/*
++ * Netlink related functions
++ */
++void	pvd_rtnl_notify(struct net_pvd *pvd, int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct pvdmsg *pvdmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct pvdmsg));
++
++	if (pvd->notifications_blocked) {
++		return;
++	}
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_PVDSTATUS, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	pvdmsg = nlmsg_data(nlh);
++	pvdmsg->pvd_state = state;
++	strcpy(pvdmsg->pvd_name, pvd->name);
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
++
++EXPORT_SYMBOL(pvd_rtnl_notify);
++
++void	rdnss_rtnl_notify(
++		struct net_pvd *pvd,
++		struct in6_addr *rdnss,
++		int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct rdnssmsg *rdnssmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct rdnssmsg));
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_RDNSS, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	rdnssmsg = nlmsg_data(nlh);
++	rdnssmsg->rdnss_state = state;
++	strcpy(rdnssmsg->pvd_name, pvd->name);
++	memcpy(&rdnssmsg->rdnss, rdnss, sizeof(rdnssmsg->rdnss));
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
++
++EXPORT_SYMBOL(rdnss_rtnl_notify);
++
++void	dnssl_rtnl_notify(
++		struct net_pvd *pvd,
++		char *dnssl,
++		int state)
++{
++	struct net *net = pvd_net(pvd);
++	struct sk_buff *skb;
++	struct nlmsghdr *nlh;
++	struct dnsslmsg *dnsslmsg;
++	int err;
++	int msg_size = NLMSG_ALIGN(sizeof(struct dnsslmsg));
++
++	skb = nlmsg_new(msg_size, GFP_ATOMIC);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto errout;
++	}
++
++	nlh = nlmsg_put(skb, 0, 0, RTM_DNSSL, msg_size, 0);
++	if (!nlh) {
++		goto nla_put_failure;
++	}
++
++	dnsslmsg = nlmsg_data(nlh);
++	dnsslmsg->dnssl_state = state;
++	strcpy(dnsslmsg->pvd_name, pvd->name);
++	strcpy(dnsslmsg->dnssl, dnssl);
++
++	nlmsg_end(skb, nlh);
++
++	rtnl_notify(skb, net, 0, RTNLGRP_PVD, NULL, GFP_ATOMIC);
++	return;
++
++nla_put_failure:
++	nlmsg_free(skb);
++	err = -EMSGSIZE;
++errout:
++	rtnl_set_sk_err(net, RTNLGRP_PVD, err);
++}
++
++EXPORT_SYMBOL(dnssl_rtnl_notify);
++
++/*
++ * pvd_migrate_route : some routes are created via RA
++ * or manually associated to a pvd. We want to be able to find the pvd
++ * associated to the route and, conversely, find all routes attached
++ * to a pvd
++ * Routes can also migrate from one pvd to another one. This function
++ * updates the different links between pvds and ruotes
++ * A route associated to no pvd has its ->pvd field == NULL
++ *
++ * A reference is hold on the route on success as well as on the
++ * pvd
++ *
++ * FIXME : check if rtnl_lock() must be taken here !
++ */
++/*
++ * pvd_migrate_route : migrate a route from its current pvd to a new pvd
++ * Its current pvd might be NULL
++ *
++ * We want to ignore routes with the DST_NOCOUNT flag
++ */
++int	pvd_migrate_route(
++		struct net_pvd *newpvd,
++		struct rt6_info *rt)
++{
++	int		i;
++	int		deltaCount = 0;
++	struct net_pvd	*oldpvd;
++	int		rc = 0;
++
++	if (rt == NULL) {
++		return(0);
++	}
++
++	oldpvd = rt->rt6i_pvd;
++
++	printk("pvd_migrate_route(pvd = %s, oldpvd = %s, rt = %p, dev = %s)\n",
++		newpvd ? newpvd->name : "<no pvd>",
++		oldpvd ? oldpvd->name : "<no pvd>",
++		rt,
++		rt->dst.dev ? rt->dst.dev->name : "");
++
++	if (newpvd == oldpvd) {
++		return(0);
++	}
++
++	rcu_read_lock();
++
++	/*
++	 * Remove from oldpvd if present
++	 */
++	if (oldpvd == NULL) {
++		goto Add;
++	}
++
++	for (i = 0; i < oldpvd->nroutes; i++) {
++		if (oldpvd->routes[i] == rt) {
++			/*
++			 * Compact the array
++			 */
++			deltaCount--;
++			for (i++; i < oldpvd->nroutes; i++) {
++				oldpvd->routes[i - 1] = oldpvd->routes[i];
++			}
++			oldpvd->nroutes--;
++			break;
++		}
++	}
++
++	pvd_put(oldpvd);
++
++	rt->rt6i_pvd = NULL;
++
++Add :
++	if (newpvd == NULL) {
++		goto Exit;
++	}
++
++	/*
++	 * Some routes not attached to the interface on which the
++	 * pvd has been received are created => we don't want to
++	 * migrate them to this pvd
++	 */
++	if (rt->dst.dev != newpvd->dev) {
++		rt->rt6i_pvd = NULL;
++		goto Exit;
++	}
++
++	for (i = 0; i < newpvd->nroutes && newpvd->routes[i] != rt; i++);
++
++	if (i >= newpvd->nroutes) {
++		/*
++		 * Not found => create a new entry
++		 */
++		if (newpvd->nroutes >= MAXROUTESPERPVD) {
++			rc = -1;
++			goto Exit;
++		}
++		newpvd->routes[newpvd->nroutes++] = rt;
++		deltaCount++;
++	}
++
++	rt->rt6i_pvd = pvd_hold(newpvd);
++
++Exit :
++#if	0
++	if (deltaCount == -1) {
++		dst_release(&rt->dst);
++	} else if (deltaCount == 1) {
++		dst_hold(&rt->dst);
++	}
++#endif
++
++	/*
++	 * Note that notifications below (pvd_rtnl_notify) may result in
++	 * multiple notifications when routes are deleted (or added)
++	 * The applications may react to each of these notifications by
++	 * requesting the pvd attributes : this is unfortunate. We
++	 * may want to coalesce these notifications (by using a timer
++	 * maybe), or, lazy we are, give the applications some guidelines
++	 * to implement their own timer before requesting the attributes
++	 */
++	if (oldpvd != NULL) {
++		printk("pvd_migrate_route : oldpvd : %d routes present\n",
++			oldpvd->nroutes);
++		pvd_rtnl_notify(oldpvd, PVD_UPDATE);
++	}
++
++	if (newpvd != NULL) {
++		printk("pvd_migrate_route : newpvd : %d routes present\n",
++			newpvd->nroutes);
++		pvd_rtnl_notify(newpvd, PVD_UPDATE);
++	}
++
++	rcu_read_unlock();
++
++	return(rc);
++}
++
++EXPORT_SYMBOL(pvd_migrate_route);
++
++/*
++ * pvd_migrate_addr : some addresses are created from prefixes (via RA)
++ * or manually associated to a pvd. We want to be able to find the pvd
++ * associated to the address and, conversely, find all addresses attached
++ * to a pvd
++ * Addresses can also migrate from one pvd to another one. This function
++ * updates the different links between pvds and addresses
++ * An address associated to no pvd has its ->pvd field == NULL
++ *
++ * A reference is hold on the address on success as well as on the
++ * pvd
++ *
++ * FIXME : check if rtnl_lock() must be taken here ! WARNING :
++ * it seems that we are creating issues when removing an address
++ * and calling pvd_migrate_addr to remove it from its pvd =>
++ * rtnl_lock must certainly already be taken somewhere in the
++ * callers chain => we are using rcu_read_lock()/rcu_read_unlock()
++ * instead
++ */
++/*
++ * pvd_migrate_addr : migrate an address from its current pvd to a new pvd
++ * Its current pvd might be NULL
++ */
++int	pvd_migrate_addr(
++		struct net_pvd *newpvd,
++		struct inet6_ifaddr *ifa)
++{
++	int		i;
++	int		deltaCount = 0;
++	struct net_pvd	*oldpvd;
++	int		rc = 0;
++
++	if (ifa == NULL) {
++		return(0);
++	}
++
++	oldpvd = ifa->pvd;
++
++	printk("pvd_migrate_addr(pvd = %s, oldpvd = %s, ifa = %p) called\n",
++		newpvd ? newpvd->name : "<no pvd>",
++		oldpvd ? oldpvd->name : "<no pvd>",
++		ifa);
++
++	if (newpvd == oldpvd) {
++		return(0);
++	}
++
++	rcu_read_lock();
++
++	/*
++	 * Remove from oldpvd if present
++	 */
++	if (oldpvd == NULL) {
++		goto Add;
++	}
++
++	for (i = 0; i < oldpvd->naddresses; i++) {
++		if (oldpvd->addresses[i] == ifa) {
++			/*
++			 * Compact the array
++			 */
++			deltaCount--;
++			for (i++; i < oldpvd->naddresses; i++) {
++				oldpvd->addresses[i - 1] = oldpvd->addresses[i];
++			}
++			oldpvd->naddresses--;
++			break;
++		}
++	}
++
++	pvd_put(oldpvd);
++
++	ifa->pvd = NULL;
++
++Add :
++	if (newpvd == NULL) {
++		goto Exit;
++	}
++
++	for (i = 0; i < newpvd->naddresses && newpvd->addresses[i] != ifa; i++);
++
++	if (i >= newpvd->naddresses) {
++		/*
++		 * Not found => create a new entry
++		 */
++		if (newpvd->naddresses >= MAXADDRPERPVD) {
++			rc = -1;
++			goto Exit;
++		}
++		newpvd->addresses[newpvd->naddresses++] = ifa;
++		deltaCount++;
++	}
++
++	ifa->pvd = pvd_hold(newpvd);
++
++Exit :
++#if	0
++	if (deltaCount == -1) {
++		in6_ifa_put(ifa);
++	} else if (deltaCount == 1) {
++		in6_ifa_hold(ifa);
++	}
++#endif
++
++	if (oldpvd != NULL) {
++		printk("pvd_migrate_addr : oldpvd : %d addresses present\n",
++			oldpvd->naddresses);
++		pvd_rtnl_notify(oldpvd, PVD_UPDATE);
++	}
++
++	if (newpvd != NULL) {
++		printk("pvd_migrate_addr : newpvd : %d addresses present\n",
++			newpvd->naddresses);
++		pvd_rtnl_notify(newpvd, PVD_UPDATE);
++	}
++
++	rcu_read_unlock();
++
++	return(rc);
++}
++
++EXPORT_SYMBOL(pvd_migrate_addr);
++
++/*
++ * pvd_register_rdnss : given a RDNSS option, registers it. This means
++ * checking if each address it defines is already registered. We also
++ * handle a lifetime == 0 to delete RDNSS entries
++ */
++static void pvd_register_one_rdnss(
++			struct net_pvd *pvd,
++			struct in6_addr *ina, 
++			unsigned long lifetime)
++{
++	int i, j;
++
++	for (i = 0; i < pvd->nrdnss; i++) {
++		if (memcmp(&pvd->rdnss[i], ina, sizeof(*ina)) == 0) {
++			/*
++			 * Update its lifetime (or delete it if lifetime == 0)
++			 */
++			if (lifetime == 0) {
++				rdnss_rtnl_notify(pvd, &pvd->rdnss[i], RDNSS_DEL);
++
++				for (j = i + 1; j < pvd->nrdnss; j++) {
++					pvd->rdnssExpire[j - 1] = pvd->rdnssExpire[j];
++					pvd->rdnss[j - 1] = pvd->rdnss[j];
++				}
++				pvd->nrdnss--;
++			}
++			else {
++				pvd->rdnssExpire[i] =
++					lifetime == (unsigned long) 0xFFFFFFFF ?
++						-1UL :
++						jiffies / HZ + lifetime;
++			}
++			return;
++		}
++	}
++
++	if (lifetime == 0) {
++		return;
++	}
++
++	if (pvd->nrdnss < MAXRDNSSPERPVD) {
++		pvd->rdnss[pvd->nrdnss] = *ina;
++		pvd->rdnssExpire[pvd->nrdnss] =
++			lifetime == (unsigned long) 0xFFFFFFFF ?
++				-1UL : 
++				jiffies / HZ + lifetime;
++
++		rdnss_rtnl_notify(pvd, &pvd->rdnss[pvd->nrdnss], RDNSS_NEW);
++
++		pvd->nrdnss++;
++	}
++}
++
++void	pvd_register_rdnss(struct net_pvd *pvd, void *rdnss_opt)
++{
++	struct nd_opt_rdnss_info *rdnssi = (struct nd_opt_rdnss_info *) rdnss_opt;
++	int count = rdnssi->nd_opt_rdnssi_len;
++
++	rcu_read_lock();
++
++	switch (count) {
++		case 7 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr3,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			/* FALLTHROUGH */
++		case 5 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr2,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			/* FALLTHROUGH */
++		case 3 :
++			pvd_register_one_rdnss(
++					pvd,
++					&rdnssi->nd_opt_rdnssi_addr1,
++					ntohl(rdnssi->nd_opt_rdnssi_lifetime));
++			break;
++	}
++
++	rcu_read_unlock();
++}
++
++EXPORT_SYMBOL(pvd_register_rdnss);
++
++/*
++ * pvd_register_dnssl : register a DNSSL blob (we should really parse each
++ * FQDN name defined in the option)
++ */
++static void pvd_register_one_dnssl(
++			struct net_pvd *pvd,
++			char *dns_name,
++			unsigned long lifetime)
++{
++	int i, j;
++
++	for (i = 0; i < pvd->ndnssl; i++) {
++		if (strcmp(pvd->dnssl[i], dns_name) == 0) {
++			/*
++			 * Update its lifetime (or delete it if lifetime == 0)
++			 */
++			if (lifetime == 0) {
++				dnssl_rtnl_notify(pvd, pvd->dnssl[i], DNSSL_DEL);
++
++				kfree(pvd->dnssl[i]);
++				for (j = i + 1; j < pvd->ndnssl; j++) {
++					pvd->dnsslExpire[j - 1] = pvd->dnsslExpire[j];
++					pvd->dnssl[j - 1] = pvd->dnssl[j];
++				}
++				pvd->ndnssl--;
++			}
++			else {
++				pvd->dnsslExpire[i] =
++					lifetime == (unsigned long) 0xFFFFFFFF ?
++						-1UL :
++						jiffies / HZ + lifetime;
++			}
++			return;
++		}
++	}
++
++	if (lifetime == 0) {
++		return;
++	}
++
++	if (pvd->ndnssl < MAXDNSSLPERPVD) {
++		if ((pvd->dnssl[pvd->ndnssl] = kstrdup(dns_name, GFP_KERNEL)) == NULL) {
++			return;
++		}
++		pvd->dnsslExpire[pvd->ndnssl] =
++			lifetime == (unsigned long) 0xFFFFFFFF ?
++				-1UL :
++				jiffies / HZ + lifetime;
++
++		dnssl_rtnl_notify(pvd, pvd->dnssl[pvd->ndnssl], DNSSL_NEW);
++
++		pvd->ndnssl++;
++	}
++}
++
++void	pvd_register_dnssl(struct net_pvd *pvd, void *dnssl_opt)
++{
++	struct nd_opt_dnssl_info *dnssli = (struct nd_opt_dnssl_info *) dnssl_opt;
++	int offset;
++	int offset_max = (dnssli->nd_opt_dnssli_len - 1) * 8;
++	char suffix[256];
++
++	suffix[0] = '\0';
++
++	rcu_read_lock();
++
++	for (offset = 0; offset < offset_max;) {
++		int label_len = dnssli->nd_opt_dnssli_suffixes[offset++];
++
++		if (label_len == 0) {
++			/*
++			 * Ignore empty suffixes
++			 */
++			if (suffix[0] == '\0')
++				continue;
++
++			/*
++			 * We have a complete FQDN : register it or update its
++			 * lifetime
++			 */
++			pvd_register_one_dnssl(
++					pvd, 
++					suffix,
++					ntohl(dnssli->nd_opt_dnssli_lifetime));
++
++			suffix[0] = '\0';
++			continue;
++		}
++
++		if ((sizeof(suffix) - strlen(suffix)) < (label_len + 2)) {
++			printk("oversized suffix in DNSSL option\n");
++			break;
++		}
++
++		if (suffix[0] != '\0')
++			strcat(suffix, ".");
++		strncat(suffix,
++			(char *) &dnssli->nd_opt_dnssli_suffixes[offset],
++			label_len);
++		offset += label_len;
++	}
++
++	rcu_read_unlock();
++}
++
++EXPORT_SYMBOL(pvd_register_dnssl);
++
++/*
++ * pvd_getboundpvd : given a socket, retrieve the first bound pvd if any
++ * If the socket is not bound, check if a pvd has been set at the thread
++ * or process level
++ *
++ * The returned pvd gets one reference. The function returns 0 on success,
++ * a negative value on error
++ *
++ * Priority checking :
++ * 1) socket level first (can be forced to not use any pvd)
++ * 2) thread level (can be forced to not use any pvd)
++ * 3) process level (can be forced to not use any pvd)
++ *
++ * Internal API
++ */
++static int _pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd, int scope)
++{
++	struct task_struct *p = current;
++	int ret = 0;
++
++	*pvd = NULL;
++
++	if (scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++	if (scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++
++socket_scope :
++	/*
++	 * Time to resolve the socket bound pvd (currently full index) to pvd pointer
++	 */
++	if (sk->sk_pvd_bind_type == PVD_BIND_INHERIT) {
++		if (scope == -1) {
++			goto thread_scope;
++		}
++		return 0;
++	}
++
++	if (sk->sk_pvd_bind_type == PVD_BIND_NOPVD) {
++		return 0;
++	}
++	if (sk->sk_pvd_bind_type == PVD_BIND_ONEPVD) {
++		rcu_read_lock();
++		pvd_hold(*pvd = __pvd_get_by_fullindex(
++					sock_net(sk),
++					sk->sk_bound_pvd));
++		rcu_read_unlock();
++		return *pvd == NULL ? -ENETUNREACH : 0;
++	}
++
++thread_scope :
++	/*
++	 * Check at the current thread/process level
++	 */
++	rcu_read_lock();
++	if (scope == -1 || scope == PVD_BIND_SCOPE_THREAD) {
++		if (p->bound_pvd == INHERIT_PVD_PTR) {
++			if (scope == PVD_BIND_SCOPE_THREAD) {
++				goto rcu_out;
++			}
++			goto process_scope_rcu;
++		}
++		if (p->bound_pvd == FORCE_NO_PVD_PTR) {
++			goto rcu_out;
++		}
++		/*
++		 * A pvdname has been specified -> convert it to a
++		 * pvd. In this case (success or failure), we don't
++		 * want to loookup at the parent's level
++		 */
++		pvd_hold(*pvd = __pvd_get_by_name(
++					sock_net(sk),
++					p->bound_pvd,
++					NULL,	/* dev */
++					NULL));	/* lla */
++		if (*pvd == NULL) {
++			ret = -ENETUNREACH;
++		}
++		goto rcu_out;
++	}
++
++process_scope :
++	rcu_read_lock();
++
++process_scope_rcu :
++	/*
++	 * Find the parent
++	 */
++	while (p &&
++	       p->real_parent &&
++	       p->real_parent->tgid == current->tgid) {
++		p = p->real_parent;
++	}
++
++	if (p == NULL) {
++		goto rcu_out;
++	}
++
++	if (p->bound_pvd == FORCE_NO_PVD_PTR ||
++	    p->bound_pvd == INHERIT_PVD_PTR) {
++		goto rcu_out;
++	}
++
++	pvd_hold(*pvd = __pvd_get_by_name(
++				sock_net(sk),
++				p->bound_pvd,
++				NULL,	/* dev */
++				NULL));	/* lla */
++	if (*pvd == NULL) {
++		ret = -ENETUNREACH;
++	}
++	goto rcu_out;
++
++rcu_out :
++	rcu_read_unlock();
++
++	return ret;
++}
++
++int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd)
++{
++	return _pvd_getboundpvd(sk, pvd, -1);
++}
++
++EXPORT_SYMBOL(pvd_getboundpvd);
++
++/*
++ * sock_setbindtopvd : a socket can be bound to at most one pvd
++ * The socket option argument is a handle to a pointer and
++ * not a pointer to the actual structure (the bind_to_pvd
++ * structure is too large to be copied on the kernel stack)
++ *
++ * Additionnaly, we may want to have the following pvd hint
++ * hierarchy :
++ * 1) socket level first (can be forced to not use any pvd)
++ * 2) thread level (can be forced to not use any pvd)
++ * 3) process level (can be forced to not use any pvd)
++ *
++ * The scope field of the bind_to_pvd structure tells us
++ * where to store the pvd hint
++ *
++ * For socket scope, it will be stored in the socket structure
++ * itself
++ *
++ * For thread scope, it will be stored in the current task
++ * structure
++ *
++ * For process scope, it will be stored in the parent task
++ * structure (in fact, in the top most parent with the same
++ * tgid as the current task)
++ *
++ * For socket scope, the pvdid will be stored
++ *
++ * For thread and process scopes, the pvd name will be stored
++ * (it will be turned into a pvd structure at a later stage)
++ *
++ * USERLAND ABI
++ */
++int sock_setbindtopvd(
++		struct sock *sk,
++		char __user *optval,
++		int optlen)
++{
++	int ret = -ENOPROTOOPT;
++	struct net *net = sock_net(sk);
++	char pvdname[PVDNAMSIZ];
++	int ubindtype;
++	struct bind_to_pvd __user *pbtp;
++	struct task_struct *p;
++ 
++	if (optlen < 0) {
++		return -EINVAL;
++	}
++
++	if (optlen != sizeof(struct bind_to_pvd *)) {
++		return -EINVAL;
++	}
++
++	if (copy_from_user(&pbtp, optval, optlen)) {
++		return -EFAULT;
++	}
++
++	get_user(ubindtype, &pbtp->bindtype);
++	if (ubindtype != PVD_BIND_INHERIT &&
++	    ubindtype != PVD_BIND_NOPVD &&
++	    ubindtype != PVD_BIND_ONEPVD) {
++		return -EINVAL;
++	}
++
++	if (ubindtype == PVD_BIND_ONEPVD) {
++		int l = strncpy_from_user(pvdname, pbtp->pvdname, PVDNAMSIZ - 1);
++
++		if (l <= 0 || l == PVDNAMSIZ - 1) {
++			ret = l < 0 ? l : -EINVAL;
++			return ret;
++		}
++	}
++
++	rcu_read_lock();
++
++	ret = 0;
++
++	if (pbtp->scope == PVD_BIND_SCOPE_THREAD) goto thread_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_PROCESS) goto process_scope;
++	if (pbtp->scope == PVD_BIND_SCOPE_SOCKET) goto socket_scope;
++
++	ret = -EINVAL;
++	goto rcu_out;
++
++	/* --------------------- THREAD SCOPE ------------------ */
++thread_scope :
++	p = current;
++	goto handle_process_thread_scope;
++
++	/* --------------------- PROCESS SCOPE ----------------- */
++process_scope :
++	for (p = current;
++		p && p->real_parent && p->real_parent->tgid == current->tgid;
++		    p = p->real_parent);
++
++handle_process_thread_scope :
++	if (p) {
++		if (p->bound_pvd != FORCE_NO_PVD_PTR &&
++			p->bound_pvd != INHERIT_PVD_PTR) {
++			kfree(p->bound_pvd);
++			p->bound_pvd = INHERIT_PVD_PTR;
++		}
++		if (ubindtype == PVD_BIND_INHERIT) {
++			p->bound_pvd = INHERIT_PVD_PTR;
++		} else if (ubindtype == PVD_BIND_NOPVD) {
++			p->bound_pvd = FORCE_NO_PVD_PTR;
++		}
++		else {
++			if (! (p->bound_pvd = kstrdup(pvdname, GFP_KERNEL))) {
++				p->bound_pvd = FORCE_NO_PVD_PTR;
++				ret = -ENOSPC;
++				goto rcu_out;
++			}
++		}
++		
++	}
++
++	goto rcu_out;
++
++	/* --------------------- SOCKET SCOPE ------------------ */
++socket_scope :
++	ret = 0;
++	lock_sock(sk);
++
++	sk->sk_pvd_bind_type = ubindtype;
++
++	if (ubindtype == PVD_BIND_ONEPVD) {
++		struct net_pvd *pvd;
++
++		if (! (pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL))) {
++			sk->sk_pvd_bind_type = PVD_BIND_NOPVD;
++			ret = -ENETUNREACH;
++		}
++		else {
++			sk->sk_bound_pvd = pvd_get_fullindex(pvd);
++		}
++	}
++	sk_dst_reset(sk);
++	release_sock(sk);
++
++rcu_out :
++	rcu_read_unlock();
++
++	return ret;
++}
++
++/*
++ * sock_getbindtopvd : return the currently bound pvd for the
++ * specified scope.
++ *
++ * The scope is a strict hint here (contrary to the pvd_getboundpvd()
++ * kernel only call). This means that we don't want to fallback to
++ * higher level of the hierarchy (socket -> thread -> process)
++ *
++ * USERLAND ABI
++ */
++int sock_getbindtopvd(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len)
++{
++	int ret = -ENOPROTOOPT;
++	struct bind_to_pvd __user *pbtp;
++	int l;
++	struct net_pvd *pvd;
++
++	if (len != sizeof(struct bind_to_pvd *)) {
++		return -EINVAL;
++	}
++
++	if (copy_from_user(&pbtp, optval, len)) {
++		return -EFAULT;
++	}
++
++	lock_sock(sk);
++	ret = _pvd_getboundpvd(sk, &pvd, pbtp->scope);
++	release_sock(sk);
++	if (ret != 0) {
++		return ret;
++	}
++
++	if (pvd != NULL) {
++		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++			l = PVDNAMSIZ - 1;	/* should not happen */
++		}
++		if (copy_to_user(pbtp->pvdname,
++				 pvd->name, l + 1)) {
++			ret = -EFAULT;
++		}
++		pvd_put(pvd);
++		put_user(PVD_BIND_ONEPVD, &pbtp->bindtype);
++	} else {
++		put_user(PVD_BIND_NOPVD, &pbtp->bindtype);
++	}
++
++	return 0;
++}
++
++/*
++ * _sock_getpvdattr : fill in a user net_pvd_attribute structure
++ * Called by both sock_getpvdlist (returns the attributes for all
++ * the PvD) and sock_getpvdattr (returns the attributes for one given
++ * PvD)
++ */
++static int _sock_getpvdattr(
++		struct net_pvd *pvd, 
++		struct net_pvd_attribute *pvdattr)
++{
++static	char	lNullDevName[IFNAMSIZ] = { 0 };
++	int	l;
++	int	i;
++	int	ret;
++
++	/*
++	 * First, the attributes extracted from the
++	 * pvd option header
++	 */
++	if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++		l = PVDNAMSIZ - 1;
++	}
++	ret = -EFAULT;
++	if (copy_to_user(pvdattr->name, pvd->name, l + 1)) {
++		goto out;
++	}
++	put_user(pvd->sequence_number, &pvdattr->sequence_number);
++	put_user(pvd->h_flag, &pvdattr->h_flag);
++	put_user(pvd->l_flag, &pvdattr->l_flag);
++	put_user(pvd->a_flag, &pvdattr->a_flag);  // introduced in draft-01
++	put_user(pvd_get_fullindex(pvd), &pvdattr->index);
++	put_user(pvd->implicit_flag, &pvdattr->implicit_flag);
++
++	/*
++	 * Now, the attributes induced from the RA carrying this PvD
++	 *
++	 * Receiving interface (eg eth0)
++	 * LLA of the router
++	 * Addresses allocated from prefixes
++	 * Routes
++	 * User options :
++	 * 	DNSSL
++	 * 	RDNSS
++	 */
++	if (copy_to_user(&pvdattr->lla, &pvd->lla, sizeof(pvdattr->lla))) {
++		goto out;
++	}
++
++	if (copy_to_user(
++			&pvdattr->dev,
++			pvd->dev ? pvd->dev->name : lNullDevName, IFNAMSIZ)) {
++		goto out;
++	}
++
++	put_user(pvd->naddresses, &pvdattr->naddresses);
++	for (i = 0; i < pvd->naddresses; i++) {
++		if (copy_to_user(
++			&pvdattr->addresses[i],
++			&pvd->addresses[i]->addr,
++			sizeof(pvdattr->addresses[i]))) {
++				goto out;
++		}
++		put_user(
++			pvd->addresses[i]->prefix_len,
++			&pvdattr->addr_prefix_len[i]);
++	}
++
++	/*
++	 * The routes
++	 */
++	put_user(pvd->nroutes, &pvdattr->nroutes);
++	for (i = 0; i < pvd->nroutes; i++) {
++		struct in6_addr NullAddr;
++
++		struct rt6_info *rt = pvd->routes[i];
++		struct net_pvd_route *urt = &pvdattr->routes[i];
++
++		memset(&NullAddr, 0, sizeof(NullAddr));
++
++		if (copy_to_user(
++			&urt->dst,
++			&rt->rt6i_dst.addr,
++			sizeof(urt->dst))) {
++			goto out;
++		}
++
++		if (copy_to_user(
++			&urt->gateway,
++			(rt->rt6i_flags & RTF_GATEWAY) ?
++				&rt->rt6i_gateway :
++				&NullAddr,
++			sizeof(urt->gateway))) {
++			goto out;
++		}
++
++		if (copy_to_user(
++			urt->dev_name,
++			rt->dst.dev ? rt->dst.dev->name : lNullDevName, IFNAMSIZ)) {
++			goto out;
++		}
++	}
++
++	/*
++	 * The RDNSS/DNSSL attributes
++	 */
++	put_user(pvd->nrdnss, &pvdattr->nrdnss);
++	for (i = 0; i < pvd->nrdnss; i++) {
++		if (copy_to_user(
++				&pvdattr->rdnss[i],
++				&pvd->rdnss[i],
++				sizeof(pvdattr->rdnss[i]))) {
++			goto out;
++		}
++	}
++
++	put_user(pvd->ndnssl, &pvdattr->ndnssl);
++	for (i = 0; i < pvd->ndnssl; i++) {
++		if ((l = strlen(pvd->dnssl[i])) > FQDNSIZ) {
++			goto out;
++		}
++		if (copy_to_user(
++				pvdattr->dnssl[i],
++				pvd->dnssl[i],
++				l + 1)) {
++			goto out;
++		}
++	}
++
++	ret = 0;
++
++out :
++	return ret;
++}
++
++/*
++ * sock_createpvd : create/update a pvd with some attributes
++ * When creating a PvD, fields not specified receive a default
++ * value. When updating a PvD, only those specified in the flag
++ * field are updated
++ *
++ * USERLAND ABI
++ */
++int sock_createpvd(
++		struct sock *sk,
++		char __user *optval,
++		int optlen)
++{
++	int ret = -ENOPROTOOPT;
++	struct net *net = sock_net(sk);
++	struct create_pvd cpvd;
++	struct net_pvd *pvd;
++	int pvdJustCreated = false;
++
++	if (! ns_capable(net->user_ns, CAP_NET_ADMIN))
++		return -EPERM;
++
++	if (optlen != sizeof(struct create_pvd)) {
++		return -EINVAL;
++	}
++
++	if (copy_from_user(&cpvd, optval, optlen)) {
++		return -EFAULT;
++	}
++
++	if (cpvd.pvdname[0] == '\0') {
++		return -EINVAL;	/* empty name */
++	}
++
++	rtnl_lock();
++
++	for (pvd = net->first_used_pvd;
++	     pvd != NULL && strcmp(pvd->name, cpvd.pvdname) != 0;
++	     pvd = pvd->next);
++
++	ret = 0;
++
++	/*
++	 * if PvD non existent => create it if deprecated != 1
++	 */
++	if (pvd == NULL) {
++		if ((cpvd.flag & PVD_ATTR_DEPRECATED) != 0 && cpvd.deprecated == 1) {
++			goto out;
++		}
++
++		if ((pvd = __register_pvd(net, cpvd.pvdname, NULL, NULL)) == NULL) {
++			ret = -ENOMEM;
++			goto out;
++		}
++		pvdJustCreated = true;
++	}
++
++	if ((cpvd.flag & PVD_ATTR_DEPRECATED) != 0 && cpvd.deprecated == 1) {
++		__unregister_pvd(pvd);
++		goto out;
++	}
++
++	rcu_read_lock();
++
++	if ((cpvd.flag & PVD_ATTR_SEQNUMBER) != 0) {
++		pvd->sequence_number = cpvd.sequence_number;
++	}
++
++	if ((cpvd.flag & PVD_ATTR_HFLAG) != 0) {
++		pvd->h_flag = cpvd.h_flag;
++	}
++
++	if ((cpvd.flag & PVD_ATTR_LFLAG) != 0) {
++		pvd->l_flag = cpvd.l_flag;
++	}
++
++	rcu_read_unlock();
++
++	if (cpvd.flag != 0 || pvdJustCreated) {
++		pvd_rtnl_notify(pvd, pvdJustCreated ? PVD_NEW : PVD_UPDATE);
++	}
++out :
++	rtnl_unlock();
++
++	return ret;
++}
++
++/*
++ * sock_getpvdattr : return the attributes for a given PvD
++ *
++ * USERLAND ABI
++ */
++int sock_getpvdattr(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len)
++{
++	int ret = -ENOPROTOOPT;
++	struct net *net = sock_net(sk);
++	struct pvd_attr pva;
++	char pvdname[PVDNAMSIZ];
++	struct net_pvd *pvd;
++	int l;
++
++	if (len != sizeof(struct pvd_attr)) {
++		return -EINVAL;
++	}
++
++	if (copy_from_user(&pva, optval, len)) {
++		return -EFAULT;
++	}
++
++	l = strncpy_from_user(pvdname, pva.pvdname, PVDNAMSIZ - 1);
++
++	if (l < 0 || l == PVDNAMSIZ - 1) {
++		return l < 0 ? l : -EINVAL;
++	}
++
++	if (l == 0) {
++		return -EINVAL;	/* empty name */
++	}
++
++	rtnl_lock();
++
++	for (pvd = net->first_used_pvd;
++	     pvd != NULL && strcmp(pvd->name, pvdname) != 0;
++	     pvd = pvd->next);
++
++	ret = pvd ? _sock_getpvdattr(pvd, pva.pvdattr) : -ENOENT;
++
++	rtnl_unlock();
++
++	return ret;
++}
++
++/*
++ * sock_getpvdlist : return the full list of currently registered
++ * pvds, with their attributes
++ *
++ * USERLAND ABI
++ */
++int sock_getpvdlist(
++		struct sock *sk,
++		char __user *optval,
++		int __user *optlen,
++		int len)
++{
++	int ret = -ENOPROTOOPT;
++	struct net *net = sock_net(sk);
++	struct pvd_list __user *pvl;
++	struct net_pvd *pvd;
++	int npvds = 0, unpvds;
++	int l;
++
++	ret = -EINVAL;
++	if (len != sizeof(struct pvd_list *)) {
++		return ret;
++	}
++
++	ret = -EFAULT;
++	if (copy_from_user(&pvl, optval, len)) {
++		return ret;
++	}
++
++	ret = -EINVAL;
++	get_user(unpvds, &pvl->npvd);
++	if (unpvds < 0 || unpvds > MAXPVD) {
++		return ret;
++	}
++
++	rtnl_lock();
++
++	for (npvds = 0, pvd = net->first_used_pvd;
++	     pvd != NULL && npvds < unpvds && npvds < MAXPVD;
++	     pvd = pvd->next, npvds++) {
++		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
++			l = PVDNAMSIZ - 1;
++		}
++		if (copy_to_user(pvl->pvds[npvds], pvd->name, l + 1)) {
++			ret = -EFAULT;
++			goto out;
++		}
++	}
++
++	put_user(npvds, &pvl->npvd);
++
++	ret = 0;
++
++out :
++	rtnl_unlock();
++
++	return ret;
++}
++
++/*
++ * Add a PvD in the per net/array. rtnl must be taken
++ * We have already checked that there was at least
++ * one free slot. On 1st PvD insertion, we arm a timer
++ * that will fire every second
++ */
++static void add_pvd_in_net(struct net_pvd *pvd)
++{
++	struct net *net = pvd_net(pvd);
++	int next_free;
++
++	ASSERT_RTNL();
++
++	write_lock_bh(&pvd_base_lock);
++
++	if (net->first_used_pvd != NULL) {
++		mod_timer(&net->pvd_timer, jiffies + HZ);
++	}
++
++	next_free = net->pvd_free_slots[net->first_free_pvd_ix];
++
++	pvd->next = net->first_used_pvd;
++	pvd->_index = net->first_free_pvd_ix;	/* link back */
++
++	net->pvd_used_slots[net->first_free_pvd_ix] = net->first_used_pvd = (void *) pvd;
++
++	net->first_free_pvd_ix = next_free;
++
++	write_unlock_bh(&pvd_base_lock);
++}
++
++/* Remove a PvD from the per net/array. rtnl must be taken */
++void remove_pvd_from_net(struct net_pvd *pvd)
++{
++	struct net *net = pvd_net(pvd);
++	struct net_pvd *_pvd, *prev;
++
++	ASSERT_RTNL();
++
++	/*
++	 * reset the entry from the per-net pvds array
++	 * and update the first_free/first_used fields
++	 */
++	write_lock_bh(&pvd_base_lock);
++
++	if (pvd->_index < 0 || pvd->_index >= MAXPVD) {
++		// Corruption
++		goto Exit;
++	}
++
++	for (_pvd = net->first_used_pvd, prev = NULL;
++	     _pvd != NULL && _pvd != pvd;
++	     prev = _pvd, _pvd = _pvd->next);
++
++	if (_pvd == NULL) {
++		// Not found in the list : internal error probably
++		goto Exit;
++	}
++	if (prev != NULL) {
++		prev->next = _pvd->next;
++	}
++	else {
++		net->first_used_pvd = _pvd->next;
++	}
++
++	net->pvd_free_slots[pvd->_index] = net->first_free_pvd_ix;
++	net->first_free_pvd_ix = pvd->_index;
++
++	net->pvd_used_slots[pvd->_index] = NULL;
++	pvd->_index = -1;
++
++Exit :
++	write_unlock_bh(&pvd_base_lock);
++}
++
++/**
++ * 	pvd_get_fullindex	- return the full index of a pvd
++ * 	@pvd : a pvd (retrieved by name or else)
++ *
++ * 	Given the pvd, build the full index that can be used
++ * 	for future safe retrieval of the pvd
++ * 	The full index combines an index (in the net->pvd_used_slots
++ * 	array) and the uniquely generated pvdindex
++ *
++ * 	The rntl semaphore mut be taken
++ */
++
++int pvd_get_fullindex(struct net_pvd *pvd)
++{
++	return pvd->_index | (pvd->pvdindex << MAXPVDSHIFT);
++}
++
++/**
++ *	__pvd_get_by_name	- find a pvd by its name
++ *	@net: the applicable net namespace
++ *	@name: name to find (authoritative if non NULL)
++ *	@dev: in a RA context, interface the RA has been received
++ *	@lla: in a RA context, lla of the router
++ *
++ *	Find a pvd by name. Must be called under RTNL semaphore
++ *	or @pvd_base_lock. If the name is found a pointer to the pvd
++ *	is returned. If the name is not found then %NULL is returned. The
++ *	reference counters are not incremented so the caller must be
++ *	careful with locks.
++ */
++
++struct net_pvd *__pvd_get_by_name(
++			struct net *net,
++			const char *name,
++			struct net_device *dev,
++			struct in6_addr *lla)
++{
++	struct in6_addr NullAddr;
++	struct net_pvd *pvd = net->first_used_pvd;
++
++	/*
++	 * If the name is specified, simple string comparison
++	 * pvd->name always contains something (even for implicit
++	 * pvd)
++	 */
++	if (name != NULL) {
++		for (pvd = net->first_used_pvd; pvd != NULL; pvd = pvd->next) {
++			if (strncmp(pvd->name, name, PVDNAMSIZ) == 0) {
++				return pvd;
++			}
++		}
++		return NULL;
++	}
++
++	/*
++	 * Name == NULL. Consider the lla and the interface
++	 */
++	memset(&NullAddr, 0, sizeof(NullAddr));
++
++	if (lla == NULL) {
++		lla = &NullAddr;
++	}
++
++	for (pvd = net->first_used_pvd; pvd != NULL; pvd = pvd->next) {
++		if (dev != NULL && pvd->dev == NULL) {
++			continue;
++		}
++		if (dev == NULL && pvd->dev != NULL) {
++			continue;
++		}
++		if (pvd->dev == dev &&
++		    memcmp(lla, &pvd->lla, sizeof(*lla)) == 0) {
++			return pvd;
++		}
++	}
++	return NULL;
++}
++EXPORT_SYMBOL(__pvd_get_by_name);
++
++/**
++ *	pvd_get_by_name_rcu	- find a pvd by its name
++ *	@net: the applicable net namespace
++ *	@name: name to find
++ *
++ *	Find an pvd by name.
++ *	If the name is found a pointer to the pvd is returned.
++ * 	If the name is not found then %NULL is returned.
++ *	The reference counters are not incremented so the caller must be
++ *	careful with locks. The caller must hold RCU lock.
++ */
++
++struct net_pvd *pvd_get_by_name_rcu(
++			struct net *net,
++			const char *name,
++			struct net_device *dev,
++			struct in6_addr *lla)
++{
++	return __pvd_get_by_name(net, name, dev, lla);
++}
++EXPORT_SYMBOL(pvd_get_by_name_rcu);
++
++/**
++ *	pvd_get_by_name		- find a pvd by its name
++ *	@net: the applicable net namespace
++ *	@name: name to find
++ *
++ *	Find an pvd by name. This can be called from any
++ *	context and does its own locking. The returned handle has
++ *	the usage count incremented and the caller must use pvd_put() to
++ *	release it when it is no longer needed. %NULL is returned if no
++ *	matching pvd is found.
++ */
++
++struct net_pvd *pvd_get_by_name(
++			struct net *net,
++			const char *name,
++			struct net_device *dev,
++			struct in6_addr *lla)
++{
++	struct net_pvd *pvd;
++
++	rcu_read_lock();
++	pvd = pvd_get_by_name_rcu(net, name, dev, lla);
++	if (pvd)
++		pvd_hold(pvd);
++	rcu_read_unlock();
++	return pvd;
++}
++EXPORT_SYMBOL(pvd_get_by_name);
++
++/**
++ *	__pvd_get_by_fullindex - find a pvd by its full pvdindex
++ *	@net: the applicable net namespace
++ *	@fullindex: index of pvd
++ *
++ *	Search for a pvd given a fullindex. A full index is built from
++ *	2 part : one which is an index in the net->pvds array and a part
++ *	which is a unique allocated number. Such a full index must have
++ *	been grabbed earlier, given a pvd name for example.
++ *	
++ *	Returns %NULL if the pvd is not found or not valid or a pointer to
++ *	the pvd. The pvd has not had its reference counter increased so the
++ *	caller must be careful about locking. The caller must hold either
++ *	the RTNL semaphore or @pvd_base_lock.
++ */
++
++struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex)
++{
++	struct net_pvd *pvd;
++	int _index = _TABIDX(fullindex);
++	u32 pvdindex = _UNIQIDX(fullindex);
++
++	if (_index < 0 || _index >= MAXPVD) {	// >= MAXPVD is not possible
++		return NULL;
++	}
++	if ((pvd = net->pvd_used_slots[_index]) == NULL) {
++		return NULL;
++	}
++	if (pvd->pvdindex != pvdindex && pvd->_index != _index) {
++		return NULL;
++	}
++	return pvd;
++}
++EXPORT_SYMBOL(__pvd_get_by_fullindex);
++
++/**
++ *	__pvd_get_by_index - find a pvd by its pvdindex
++ *	@net: the applicable net namespace
++ *	@pvdindex: index of pvd
++ *
++ *	Search for a pvd by index. Returns %NULL if the pvd
++ *	is not found or a pointer to the pvd. The pvd has not
++ *	had its reference counter increased so the caller must be careful
++ *	about locking. The caller must hold either the RTNL semaphore
++ *	or @pvd_base_lock.
++ */
++
++struct net_pvd *__pvd_get_by_index(struct net *net, u32 pvdindex)
++{
++	struct net_pvd *pvd = net->first_used_pvd;
++
++	while (pvd != NULL && pvd->pvdindex != pvdindex) {
++		pvd = pvd->next;
++	}
++	return pvd;
++}
++EXPORT_SYMBOL(__pvd_get_by_index);
++
++/**
++ *	pvd_get_by_index_rcu - find a pvd by its pvdindex
++ *	@net: the applicable net namespace
++ *	@ifindex: index of pvd
++ *
++ *	Search for an interface by index. Returns %NULL if the pvd
++ *	is not found or a pointer to the pvd. The pvd has not
++ *	had its reference counter increased so the caller must be careful
++ *	about locking. The caller must hold RCU lock.
++ */
++
++struct net_pvd *pvd_get_by_index_rcu(struct net *net, u32 pvdindex)
++{
++	return __pvd_get_by_index(net, pvdindex);
++}
++EXPORT_SYMBOL(pvd_get_by_index_rcu);
++
++/**
++ *	pvd_get_by_index - find a pvd by its pvdindex
++ *	@net: the applicable net namespace
++ *	@pvdindex: index of pvd
++ *
++ *	Search for a pvd by index. Returns NULL if the pvd
++ *	is not found or a pointer to the pvd. The pvd returned has
++ *	had a reference added and the pointer is safe until the user calls
++ *	pvd_put to indicate they have finished with it.
++ */
++
++struct net_pvd *pvd_get_by_index(struct net *net, int pvdindex)
++{
++	struct net_pvd *pvd;
++
++	rcu_read_lock();
++	pvd = pvd_get_by_index_rcu(net, pvdindex);
++	if (pvd)
++		pvd_hold(pvd);
++	rcu_read_unlock();
++	return pvd;
++}
++EXPORT_SYMBOL(pvd_get_by_index);
++
++/**
++ *	netpvd_get_name - get a pvd name, knowing its pvdindex.
++ *	@net: network namespace
++ *	@pvdname: a pointer to the buffer where the name will be stored.
++ *	@pvdindex: the pvdindex of the pvd to get the name from.
++ *
++ *	The use of raw_seqcount_begin() and cond_resched() before
++ *	retrying is required as we want to give the writers a chance
++ *	to complete when CONFIG_PREEMPT is not set.
++ */
++int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex)
++{
++	struct net_pvd *pvd;
++	unsigned int seq;
++
++retry:
++	seq = raw_seqcount_begin(&pvd_rename_seq);
++	rcu_read_lock();
++	pvd = pvd_get_by_index_rcu(net, pvdindex);
++	if (!pvd) {
++		rcu_read_unlock();
++		return -ENODEV;
++	}
++
++	strcpy(pvdname, pvd->name);
++	rcu_read_unlock();
++	if (read_seqcount_retry(&pvd_rename_seq, seq)) {
++		cond_resched();
++		goto retry;
++	}
++
++	return 0;
++}
++
++/**
++ *	pvd_new_index	-	allocate a pvdindex
++ *	@net: the applicable net namespace
++ *
++ *	Returns a suitable unique value for a new pvd
++ *	number.  The caller must hold the rtnl semaphore or the
++ *	pvd_base_lock to be sure it remains unique.
++ */
++static u32 pvd_new_index(struct net *net)
++{
++	u32	pvdindex = net->pvdindex;
++
++	if (pvdindex >= MAXPVDINDEX) {
++		pvdindex = 0;
++	}
++
++	for (;;) {
++		if (++pvdindex >= MAXPVDINDEX) {
++			pvdindex = 0;
++		}
++
++		if (!__pvd_get_by_index(net, pvdindex))
++			return(net->pvdindex = pvdindex);
++	}
++}
++
++/**
++ *	__register_pvd	-	register a PvD
++ *	@net: the applicable net namespace
++ *	@pvdname: the requested name. Can be NULL in case of implicit PvD
++ *	@dev: the interface associated to the PvD (can be NULL in case of static
++ *	registration)
++ *	@lla: the router lla (can be NULL in case of static registration)
++ */
++static	struct net_pvd	*__register_pvd(
++				struct net *net,
++				char *pvdname,
++				struct net_device *dev,
++				struct in6_addr *lla)
++{
++	struct net_pvd *pvd;
++	int FlagImplicit = false;
++
++	if (pvdname == NULL && (dev == NULL || lla == NULL)) {
++		return(NULL);
++	}
++
++	if (pvdname != NULL && strlen(pvdname) >= PVDNAMSIZ - 1) {
++		return(NULL);
++	}
++
++	/*
++	 * Check for implicit PvD => we create an implicit name
++	 */
++	if (pvdname == NULL) {
++		char sPvdName[PVDNAMSIZ];
++		char sAddr[64];
++
++		sprintf(sPvdName, "%s%%%s", addr6tostr(lla->s6_addr, sAddr), dev->name);
++		pvdname = sPvdName;
++		FlagImplicit = true;
++	}
++
++	printk("__register_pvd called: %s\n", pvdname);
++
++	if ((pvd = pvd_get_by_name(net, pvdname, dev, lla)) != NULL) {
++		return(pvd);
++	}
++
++	/*
++	 * Check if not already too many pvds defined
++	 */
++	if (net->first_free_pvd_ix == -1) {
++		return(NULL);
++	}
++
++	/*
++	 * Not existing : create a new one
++	 */
++	if ((pvd = kzalloc(
++			sizeof(*pvd),
++			GFP_KERNEL | __GFP_NOWARN | ___GFP_RETRY_MAYFAIL)) == NULL) {
++		return(NULL);
++	}
++	strcpy(pvd->name, pvdname);
++	pvd->pvdindex = pvd_new_index(net);
++	pvd->_index = -1;	/* index in the net->pvds array */
++	pvd_net_set(pvd, net);
++	pvd->dev = dev;
++	pvd->implicit_flag = FlagImplicit;
++	if (lla != NULL) {
++		memcpy(&pvd->lla, lla, sizeof(*lla));
++	}
++	if (dev != NULL) {
++		dev_hold(dev);
++	}
++
++	pvd->pcpu_refcnt = alloc_percpu(int);
++
++	if (! pvd->pcpu_refcnt) {
++		goto free_pvd;
++	}
++
++	add_pvd_in_net(pvd);	/* this should update pvd->index */
++
++	/*
++	 * The other fields will be initialized later
++	 */
++
++#ifdef CONFIG_PROC_FS
++	register_proc_pvd(net, pvd);
++#endif
++	return(pvd);
++
++free_pvd :
++	kvfree((char *) pvd);
++
++	return(NULL);
++}
++
++struct net_pvd	*register_pvd(
++			struct net *net,
++			char *pvdname,
++			struct net_device *dev,
++			struct in6_addr *lla)
++{
++	struct net_pvd	*pvd;
++
++	rtnl_lock();
++	pvd = __register_pvd(net, pvdname, dev, lla);
++	rtnl_unlock();
++	return pvd;
++}
++
++EXPORT_SYMBOL(register_pvd);
++EXPORT_SYMBOL(unregister_pvd);
++
++/*
++ * TODO : provide and implement a unregister_pvd function
++ * We should disconnect from the associated addresses, sockets
++ * and routes
++ */
++static void __unregister_pvd(struct net_pvd *pvd)
++{
++	int	i;
++
++	printk("unregister_pvd(%s) called\n", pvd ? pvd->name : "<no pvd>");
++
++	if (pvd) {
++#ifdef CONFIG_PROC_FS
++		unregister_proc_pvd(pvd_net(pvd), pvd);
++#endif
++		rcu_read_lock();
++
++		pvd_rtnl_notify(pvd, PVD_DEL);
++
++		if (pvd->pcpu_refcnt) {
++			free_percpu(pvd->pcpu_refcnt);
++		}
++		/*
++		 * Deassociate the pvd from its addresses and routes
++		 */
++		for (i = 0; i < pvd->nroutes; i++) {
++			if (pvd->routes[i]->rt6i_pvd == pvd) {	/* consistency check */
++				pvd->routes[i]->rt6i_pvd = NULL;
++			}
++		}
++
++		for (i = 0; i < pvd->naddresses; i++) {
++			if (pvd->addresses[i]->pvd == pvd) {	/* consistency check */
++				pvd->addresses[i]->pvd = NULL;
++			}
++		}
++
++		/*
++		 * Free the duplicate payloads for the RDNSS and DNSSL options
++		 */
++		for (i = 0; i < pvd->ndnssl; i++) {
++			kfree(pvd->dnssl[i]);
++		}
++
++		/*
++		 * TODO : Deassociate from the bound sockets
++		 */
++
++		rcu_read_unlock();
++
++		/*
++		 * Remove it from the net structure
++		 */
++		remove_pvd_from_net(pvd);
++
++		kvfree((char *) pvd);
++	}
++}
++
++/*
++ * pvd_check_lifetimes : timer callback checking expired rdnss/dnssl
++ * attached to registered pvds
++ */
++static void pvd_check_lifetimes(struct timer_list *t)
++{
++	struct net *net = from_timer(net, t, pvd_timer);
++	struct net_pvd *pvd, *pvdnext = NULL;
++	unsigned long now = jiffies / HZ;
++	int FlagUpdate;
++	int i, j;
++
++	rtnl_lock();
++
++	for (pvd = net->first_used_pvd; pvd; pvd = pvdnext) {
++		pvdnext = pvd->next;
++
++		rcu_read_lock();
++
++		FlagUpdate = false;
++
++		for (i = 0; i < pvd->ndnssl; i++) {
++			if (pvd->dnsslExpire[i] != -1UL &&
++					pvd->dnsslExpire[i] <= now) {
++				FlagUpdate = true;
++
++				dnssl_rtnl_notify(pvd, pvd->dnssl[i], DNSSL_DEL);
++
++				kfree(pvd->dnssl[i]);
++				for (j = i + 1; j < pvd->ndnssl; j++) {
++					pvd->dnsslExpire[j - 1] = pvd->dnsslExpire[j];
++					pvd->dnssl[j - 1] = pvd->dnssl[j];
++				}
++				pvd->ndnssl--;
++			}
++		}
++
++		for (i = 0; i < pvd->nrdnss; i++) {
++			if (pvd->rdnssExpire[i] != -1UL &&
++					pvd->rdnssExpire[i] <= now) {
++				FlagUpdate = true;
++
++				rdnss_rtnl_notify(pvd, &pvd->rdnss[i], RDNSS_DEL);
++
++				for (j = i + 1; j < pvd->nrdnss; j++) {
++					pvd->rdnssExpire[j - 1] = pvd->rdnssExpire[j];
++					pvd->rdnss[j - 1] = pvd->rdnss[j];
++				}
++				pvd->nrdnss--;
++			}
++		}
++
++		if (FlagUpdate) {
++			pvd_rtnl_notify(pvd, PVD_UPDATE);
++		}
++		rcu_read_unlock();
++	}
++
++	/*
++	 * We rearm the timer for one more second if there are
++	 * some pvd still registered
++	 */
++	if (net->first_used_pvd != NULL) {
++		mod_timer(&net->pvd_timer, jiffies + HZ);
++	}
++	rtnl_unlock();
++}
++
++void unregister_pvd(struct net_pvd *pvd)
++{
++	rtnl_lock();
++	__unregister_pvd(pvd);
++	rtnl_unlock();
++}
++
++/*
++ *	Initialize the PVD module
++ *       This is called single threaded during boot, so no need
++ *       to take the rtnl semaphore.
++ */
++static int pvd_boot_phase = 1;
++
++static int __init net_pvd_init(void)
++{
++	int rc = -ENOMEM;
++
++	BUG_ON(!pvd_boot_phase);
++
++	if (register_pernet_subsys(&netpvd_net_ops))
++		goto out;
++
++#ifdef CONFIG_PROC_FS
++	if (register_pernet_subsys(&netpvd_proc_ops))
++		goto out;
++#endif
++
++	pvd_boot_phase = 0;
++
++	rc = 0;
++out:
++	return rc;
++}
++
++subsys_initcall(net_pvd_init);
++
++#endif	/* CONFIG_NETPVD */
++
+diff --git a/net/core/sock.c b/net/core/sock.c
+index 7571dabfc4cf..6c6ba363a631 100644
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -107,6 +107,10 @@
+ #include <linux/string.h>
+ #include <linux/sockios.h>
+ #include <linux/net.h>
++#ifdef	CONFIG_NETPVD
++#include <net/pvd.h>
++#include <net/ip6_route.h>
++#endif
+ #include <linux/mm.h>
+ #include <linux/slab.h>
+ #include <linux/interrupt.h>
+@@ -704,6 +708,13 @@ int sock_setsockopt(struct socket *sock, int level, int optname,
+ 	if (optname == SO_BINDTODEVICE)
+ 		return sock_setbindtodevice(sk, optval, optlen);
+ 
++#ifdef	CONFIG_NETPVD
++	if (optname == SO_BINDTOPVD)
++		return sock_setbindtopvd(sk, optval, optlen);
++	if (optname == SO_CREATEPVD)
++		return sock_createpvd(sk, optval, optlen);
++#endif
++
+ 	if (optlen < sizeof(int))
+ 		return -EINVAL;
+ 
+@@ -1320,6 +1331,21 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
+ 	case SO_BINDTODEVICE:
+ 		return sock_getbindtodevice(sk, optval, optlen, len);
+ 
++#ifdef	CONFIG_NETPVD
++	case SO_BINDTOPVD:
++		return sock_getbindtopvd(sk, optval, optlen, len);
++	case SO_GETPVDLIST:
++		/* This one is not tied to the socket per se,
++		 * but we use the socket as a channel to the
++		 * kernel. FIXME : use the netlink channel instead
++		 * or the ioctl() way of ifreq
++		 */
++		return sock_getpvdlist(sk, optval, optlen, len);
++	case SO_GETPVDATTRIBUTES:
++		/* Same remark as for SO_GETPVDLIST */
++		return sock_getpvdattr(sk, optval, optlen, len);
++#endif
++
+ 	case SO_GET_FILTER:
+ 		len = sk_get_filter(sk, (struct sock_filter __user *)optval, len);
+ 		if (len < 0)
+@@ -2739,6 +2765,10 @@ void sock_init_data(struct socket *sock, struct sock *sk)
+ 	sk->sk_ll_usec		=	sysctl_net_busy_read;
+ #endif
+ 
++#ifdef	CONFIG_NET_PVD
++	sk->sk_pvd_bind_type	=	0;
++#endif
++
+ 	sk->sk_max_pacing_rate = ~0U;
+ 	sk->sk_pacing_rate = ~0U;
+ 	sk->sk_pacing_shift = 10;
+diff --git a/net/core/utils.c b/net/core/utils.c
+index 93066bd0305a..c53dd523c078 100644
+--- a/net/core/utils.c
++++ b/net/core/utils.c
+@@ -451,3 +451,19 @@ void inet_proto_csum_replace_by_diff(__sum16 *sum, struct sk_buff *skb,
+ 	}
+ }
+ EXPORT_SYMBOL(inet_proto_csum_replace_by_diff);
++
++char *addr6tostr(u8 const *addr, char *str) /*WQ: check if really useful*/
++{
++	sprintf(str,
++		"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
++		addr[0], addr[1],
++		addr[2], addr[3],
++		addr[4], addr[5],
++		addr[6], addr[7],
++		addr[8], addr[9],
++		addr[10], addr[11],
++		addr[12], addr[13],
++		addr[14], addr[15]);
++	return(str);
++}
++EXPORT_SYMBOL(addr6tostr);
+\ No newline at end of file
+diff --git a/net/ipv6/addrconf.c b/net/ipv6/addrconf.c
+index 2547222589fe..410a112180b1 100644
+--- a/net/ipv6/addrconf.c
++++ b/net/ipv6/addrconf.c
+@@ -82,6 +82,11 @@
+ #include <net/ip.h>
+ #include <net/netlink.h>
+ #include <net/pkt_sched.h>
++
++#ifdef CONFIG_NETPVD
++#include <net/pvd.h>
++#endif
++
+ #include <net/l3mdev.h>
+ #include <linux/if_tunnel.h>
+ #include <linux/rtnetlink.h>
+@@ -248,6 +253,9 @@ static struct ipv6_devconf ipv6_devconf __read_mostly = {
+ 	.enhanced_dad           = 1,
+ 	.addr_gen_mode		= IN6_ADDR_GEN_MODE_EUI64,
+ 	.disable_policy		= 0,
++#ifdef CONFIG_NETPVD
++	.parse_pvd		=1,
++#endif
+ };
+ 
+ static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
+@@ -302,6 +310,9 @@ static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
+ 	.enhanced_dad           = 1,
+ 	.addr_gen_mode		= IN6_ADDR_GEN_MODE_EUI64,
+ 	.disable_policy		= 0,
++#ifdef CONFIG_NETPVD
++	.parse_pvd		=1,
++#endif
+ };
+ 
+ /* Check if link is ready: is it up and is a valid qdisc available */
+@@ -929,6 +940,11 @@ void inet6_ifa_finish_destroy(struct inet6_ifaddr *ifp)
+ 	}
+ 	ip6_rt_put(ifp->rt);
+ 
++#ifdef	CONFIG_NETPVD
++	printk("inet6_ifa_finish_destroy called\n");
++	pvd_migrate_addr(NULL, ifp);
++#endif
++
+ 	kfree_rcu(ifp, rcu);
+ }
+ 
+@@ -1001,7 +1017,8 @@ static struct inet6_ifaddr *
+ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+ 	      const struct in6_addr *peer_addr, int pfxlen,
+ 	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft,
+-	      bool can_block, struct netlink_ext_ack *extack)
++	      bool can_block, struct netlink_ext_ack *extack,
++		  void *pvd)
+ {
+ 	gfp_t gfp_flags = can_block ? GFP_KERNEL : GFP_ATOMIC;
+ 	struct net *net = dev_net(idev->dev);
+@@ -1010,6 +1027,16 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+ 	int err = 0;
+ 	int addr_type = ipv6_addr_type(addr);
+ 
++#ifdef	CONFIG_NETPVD
++	{
++		char sAddr[64];
++		printk("ipv6_add_addr(pvd = %s, addr = %s, %s) called\n",
++			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
++			addr6tostr(addr->s6_addr, sAddr),
++			idev->dev->name);
++	}
++#endif
++
+ 	if (addr_type == IPV6_ADDR_ANY ||
+ 	    addr_type & IPV6_ADDR_MULTICAST ||
+ 	    (!(idev->dev->flags & IFF_LOOPBACK) &&
+@@ -1049,7 +1076,7 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+ 		goto out;
+ 	}
+ 
+-	rt = addrconf_dst_alloc(idev, addr, false);
++	rt = addrconf_dst_alloc(idev, addr, pvd, false);
+ 	if (IS_ERR(rt)) {
+ 		err = PTR_ERR(rt);
+ 		rt = NULL;
+@@ -1080,6 +1107,10 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+ 	ifa->cstamp = ifa->tstamp = jiffies;
+ 	ifa->tokenized = false;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd_migrate_addr(pvd, ifa);
++#endif
++
+ 	ifa->rt = rt;
+ 
+ 	ifa->idev = idev;
+@@ -1373,7 +1404,7 @@ static int ipv6_create_tempaddr(struct inet6_ifaddr *ifp,
+ 
+ 	ift = ipv6_add_addr(idev, &addr, NULL, tmp_plen,
+ 			    ipv6_addr_scope(&addr), addr_flags,
+-			    tmp_valid_lft, tmp_prefered_lft, block, NULL);
++			    tmp_valid_lft, tmp_prefered_lft, block, NULL, ifp->pvd);
+ 	if (IS_ERR(ift)) {
+ 		in6_ifa_put(ifp);
+ 		in6_dev_put(idev);
+@@ -1432,6 +1463,7 @@ struct ipv6_saddr_dst {
+ 	int ifindex;
+ 	int scope;
+ 	int label;
++	void *pvd;
+ 	unsigned int prefs;
+ };
+ 
+@@ -1539,7 +1571,13 @@ static int ipv6_get_saddr_eval(struct net *net,
+ 	    }
+ #endif
+ 	case IPV6_SADDR_RULE_OIF:
+-		/* Rule 5: Prefer outgoing interface */
++		/* Rule 5: Prefer pvd (if specified) then outgoing interface */
++#ifdef	CONFIG_NETPVD
++	    	if (dst->pvd != NULL && dst->pvd != score->ifa->pvd) {
++			ret = 0;
++			break;
++		}
++#endif
+ 		ret = (!dst->ifindex ||
+ 		       dst->ifindex == score->ifa->idev->dev->ifindex);
+ 		break;
+@@ -1689,6 +1727,7 @@ static int ipv6_get_saddr_master(struct net *net,
+ 
+ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
+ 		       const struct in6_addr *daddr, unsigned int prefs,
++			   void *pvd,
+ 		       struct in6_addr *saddr)
+ {
+ 	struct ipv6_saddr_score scores[2], *hiscore;
+@@ -1702,6 +1741,7 @@ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
+ 
+ 	dst_type = __ipv6_addr_type(daddr);
+ 	dst.addr = daddr;
++	dst.pvd = pvd;
+ 	dst.ifindex = dst_dev ? dst_dev->ifindex : 0;
+ 	dst.scope = __ipv6_addr_src_scope(dst_type);
+ 	dst.label = ipv6_addr_label(net, daddr, dst_type, dst.ifindex);
+@@ -2041,7 +2081,7 @@ void addrconf_dad_failure(struct sk_buff *skb, struct inet6_ifaddr *ifp)
+ 
+ 		ifp2 = ipv6_add_addr(idev, &new_addr, NULL, pfxlen,
+ 				     scope, flags, valid_lft,
+-				     preferred_lft, false, NULL);
++				     preferred_lft, false, NULL, ifp->pvd);
+ 		if (IS_ERR(ifp2))
+ 			goto lock_errdad;
+ 
+@@ -2295,7 +2335,8 @@ static void  ipv6_try_regen_rndid(struct inet6_dev *idev, struct in6_addr *tmpad
+ 
+ static void
+ addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
+-		      unsigned long expires, u32 flags)
++		      unsigned long expires, u32 flags,
++			  void *pvd)
+ {
+ 	struct fib6_config cfg = {
+ 		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_PREFIX,
+@@ -2309,6 +2350,9 @@ addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
+ 	};
+ 
+ 	cfg.fc_dst = *pfx;
++#ifdef	CONFIG_NETPVD
++	cfg.fc_pvd = pvd;
++#endif
+ 
+ 	/* Prevent useless cloning on PtP SIT.
+ 	   This thing is done here expecting that the whole
+@@ -2361,7 +2405,7 @@ static struct rt6_info *addrconf_get_prefix_route(const struct in6_addr *pfx,
+ 
+ /* Create "default" multicast route to the interface */
+ 
+-static void addrconf_add_mroute(struct net_device *dev)
++static void addrconf_add_mroute(struct net_device *dev, void *pvd)
+ {
+ 	struct fib6_config cfg = {
+ 		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_LOCAL,
+@@ -2373,11 +2417,14 @@ static void addrconf_add_mroute(struct net_device *dev)
+ 	};
+ 
+ 	ipv6_addr_set(&cfg.fc_dst, htonl(0xFF000000), 0, 0, 0);
++#ifdef	CONFIG_NETPVD
++	cfg.fc_pvd = pvd;
++#endif
+ 
+ 	ip6_route_add(&cfg, NULL);
+ }
+ 
+-static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
++static struct inet6_dev *addrconf_add_dev(struct net_device *dev, void *pvd)
+ {
+ 	struct inet6_dev *idev;
+ 
+@@ -2392,7 +2439,7 @@ static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
+ 
+ 	/* Add default multicast route */
+ 	if (!(dev->flags & IFF_LOOPBACK) && !netif_is_l3_master(dev))
+-		addrconf_add_mroute(dev);
++		addrconf_add_mroute(dev, pvd);
+ 
+ 	return idev;
+ }
+@@ -2475,7 +2522,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+ 				 struct inet6_dev *in6_dev,
+ 				 const struct in6_addr *addr, int addr_type,
+ 				 u32 addr_flags, bool sllao, bool tokenized,
+-				 __u32 valid_lft, u32 prefered_lft)
++				 __u32 valid_lft, u32 prefered_lft,
++				 void *pvd)
+ {
+ 	struct inet6_ifaddr *ifp = ipv6_get_ifaddr(net, addr, dev, 1);
+ 	int create = 0, update_lft = 0;
+@@ -2499,7 +2547,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+ 					    pinfo->prefix_len,
+ 					    addr_type&IPV6_ADDR_SCOPE_MASK,
+ 					    addr_flags, valid_lft,
+-					    prefered_lft, false, NULL);
++					    prefered_lft, false, NULL,
++						pvd);
+ 
+ 		if (IS_ERR_OR_NULL(ifp))
+ 			return -1;
+@@ -2519,6 +2568,10 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+ 		unsigned long now;
+ 		u32 stored_lft;
+ 
++#ifdef	CONFIG_NETPVD
++		pvd_migrate_addr(pvd, ifp);
++#endif
++
+ 		/* update lifetime (RFC2462 5.5.3 e) */
+ 		spin_lock_bh(&ifp->lock);
+ 		now = jiffies;
+@@ -2568,7 +2621,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+ }
+ EXPORT_SYMBOL_GPL(addrconf_prefix_rcv_add_addr);
+ 
+-void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
++void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao,
++						 void *pvd)
+ {
+ 	struct prefix_info *pinfo;
+ 	__u32 valid_lft;
+@@ -2580,6 +2634,16 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+ 
+ 	pinfo = (struct prefix_info *) opt;
+ 
++#ifdef	CONFIG_NETPVD
++	{
++		char sAddr[64];
++		printk("addrconf_prefix_rcv(pvd = %s, %s/%d, %s)\n",
++			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
++			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
++			dev->name);
++	}
++#endif
++
+ 	if (len < sizeof(struct prefix_info)) {
+ 		ADBG("addrconf: prefix option too short\n");
+ 		return;
+@@ -2650,6 +2714,10 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+ 			} else {
+ 				rt6_clean_expires(rt);
+ 			}
++#ifdef	CONFIG_NETPVD
++			printk("%s calls pvd_migrate_route()\n", __func__);
++			pvd_migrate_route(pvd, rt);
++#endif
+ 		} else if (valid_lft) {
+ 			clock_t expires = 0;
+ 			int flags = RTF_ADDRCONF | RTF_PREFIX_RT;
+@@ -2659,7 +2727,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+ 				expires = jiffies_to_clock_t(rt_expires);
+ 			}
+ 			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
+-					      dev, expires, flags);
++					      dev, expires, flags, pvd);
+ 		}
+ 		ip6_rt_put(rt);
+ 	}
+@@ -2701,7 +2769,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+ 						   &addr, addr_type,
+ 						   addr_flags, sllao,
+ 						   tokenized, valid_lft,
+-						   prefered_lft);
++						   prefered_lft, pvd);
+ 		if (err)
+ 			goto put;
+ 
+@@ -2712,9 +2780,20 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+ 					      addr_type, addr_flags, sllao,
+ 					      tokenized, valid_lft,
+ 					      prefered_lft,
+-					      dev_addr_generated);
++					      dev_addr_generated, pvd);
+ 	}
+ 	inet6_prefix_notify(RTM_NEWPREFIX, in6_dev, pinfo);
++
++#ifdef	CONFIG_NETPVD
++	{
++		char sAddr[64];
++
++		printk("inet6_prefix_notify(RTM_NEWPREFIX) called (%s/%d) [%s]\n",
++			addr6tostr(pinfo->prefix.s6_addr, sAddr), pinfo->prefix_len,
++			pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
++	}
++#endif
++
+ put:
+ 	in6_dev_put(in6_dev);
+ }
+@@ -2810,7 +2889,8 @@ static int inet6_addr_add(struct net *net, int ifindex,
+ 			  const struct in6_addr *peer_pfx,
+ 			  unsigned int plen, __u32 ifa_flags,
+ 			  __u32 prefered_lft, __u32 valid_lft,
+-			  struct netlink_ext_ack *extack)
++			  struct netlink_ext_ack *extack,
++			  void *pvd)
+ {
+ 	struct inet6_ifaddr *ifp;
+ 	struct inet6_dev *idev;
+@@ -2836,7 +2916,7 @@ static int inet6_addr_add(struct net *net, int ifindex,
+ 	if (!dev)
+ 		return -ENODEV;
+ 
+-	idev = addrconf_add_dev(dev);
++	idev = addrconf_add_dev(dev, pvd);
+ 	if (IS_ERR(idev))
+ 		return PTR_ERR(idev);
+ 
+@@ -2869,12 +2949,12 @@ static int inet6_addr_add(struct net *net, int ifindex,
+ 	}
+ 
+ 	ifp = ipv6_add_addr(idev, pfx, peer_pfx, plen, scope, ifa_flags,
+-			    valid_lft, prefered_lft, true, extack);
++			    valid_lft, prefered_lft, true, extack, pvd);
+ 
+ 	if (!IS_ERR(ifp)) {
+ 		if (!(ifa_flags & IFA_F_NOPREFIXROUTE)) {
+ 			addrconf_prefix_route(&ifp->addr, ifp->prefix_len, dev,
+-					      expires, flags);
++					      expires, flags, pvd);
+ 		}
+ 
+ 		/*
+@@ -2954,7 +3034,8 @@ int addrconf_add_ifaddr(struct net *net, void __user *arg)
+ 	rtnl_lock();
+ 	err = inet6_addr_add(net, ireq.ifr6_ifindex, &ireq.ifr6_addr, NULL,
+ 			     ireq.ifr6_prefixlen, IFA_F_PERMANENT,
+-			     INFINITY_LIFE_TIME, INFINITY_LIFE_TIME, NULL);
++			     INFINITY_LIFE_TIME, INFINITY_LIFE_TIME, NULL, 
++				 NULL);  /* FIXME : extend struct in6_ifreq to add a pvd field */
+ 	rtnl_unlock();
+ 	return err;
+ }
+@@ -2978,14 +3059,14 @@ int addrconf_del_ifaddr(struct net *net, void __user *arg)
+ }
+ 
+ static void add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+-		     int plen, int scope)
++		     int plen, int scope, void *pvd)
+ {
+ 	struct inet6_ifaddr *ifp;
+ 
+ 	ifp = ipv6_add_addr(idev, addr, NULL, plen,
+ 			    scope, IFA_F_PERMANENT,
+ 			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME,
+-			    true, NULL);
++			    true, NULL, pvd);
+ 	if (!IS_ERR(ifp)) {
+ 		spin_lock_bh(&ifp->lock);
+ 		ifp->flags &= ~IFA_F_TENTATIVE;
+@@ -3021,8 +3102,8 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+ 	}
+ 
+ 	if (addr.s6_addr32[3]) {
+-		add_addr(idev, &addr, plen, scope);
+-		addrconf_prefix_route(&addr, plen, idev->dev, 0, pflags);
++		add_addr(idev, &addr, plen, scope, NULL);  /* FIXME : pvd = NULL for now */
++		addrconf_prefix_route(&addr, plen, idev->dev, 0, pflags, NULL);
+ 		return;
+ 	}
+ 
+@@ -3045,9 +3126,9 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+ 					flag |= IFA_HOST;
+ 				}
+ 
+-				add_addr(idev, &addr, plen, flag);
++				add_addr(idev, &addr, plen, flag, NULL); /* FIXME : pvd = NULL for now */
+ 				addrconf_prefix_route(&addr, plen, idev->dev, 0,
+-						      pflags);
++						      pflags, NULL); /* FIXME : pvd = NULL for now */
+ 			}
+ 		}
+ 	}
+@@ -3068,11 +3149,12 @@ static void init_loopback(struct net_device *dev)
+ 		return;
+ 	}
+ 
+-	add_addr(idev, &in6addr_loopback, 128, IFA_HOST);
++	add_addr(idev, &in6addr_loopback, 128, IFA_HOST, NULL);
+ }
+ 
+ void addrconf_add_linklocal(struct inet6_dev *idev,
+-			    const struct in6_addr *addr, u32 flags)
++			    const struct in6_addr *addr, u32 flags,
++				void *pvd)
+ {
+ 	struct inet6_ifaddr *ifp;
+ 	u32 addr_flags = flags | IFA_F_PERMANENT;
+@@ -3085,9 +3167,9 @@ void addrconf_add_linklocal(struct inet6_dev *idev,
+ #endif
+ 
+ 	ifp = ipv6_add_addr(idev, addr, NULL, 64, IFA_LINK, addr_flags,
+-			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME, true, NULL);
++			    INFINITY_LIFE_TIME, INFINITY_LIFE_TIME, true, NULL, pvd);
+ 	if (!IS_ERR(ifp)) {
+-		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0);
++		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, idev->dev, 0, 0, pvd);
+ 		addrconf_dad_start(ifp);
+ 		in6_ifa_put(ifp);
+ 	}
+@@ -3183,7 +3265,8 @@ static void ipv6_gen_mode_random_init(struct inet6_dev *idev)
+ 	s->initialized = true;
+ }
+ 
+-static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
++static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route,
++							  void *pvd)
+ {
+ 	struct in6_addr addr;
+ 
+@@ -3200,9 +3283,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+ 	case IN6_ADDR_GEN_MODE_STABLE_PRIVACY:
+ 		if (!ipv6_generate_stable_address(&addr, 0, idev))
+ 			addrconf_add_linklocal(idev, &addr,
+-					       IFA_F_STABLE_PRIVACY);
++					       IFA_F_STABLE_PRIVACY, pvd);
+ 		else if (prefix_route)
+-			addrconf_prefix_route(&addr, 64, idev->dev, 0, 0);
++			addrconf_prefix_route(&addr, 64, idev->dev, 0, 0, pvd);
+ 		break;
+ 	case IN6_ADDR_GEN_MODE_EUI64:
+ 		/* addrconf_add_linklocal also adds a prefix_route and we
+@@ -3210,9 +3293,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+ 		 * couldn't generate one.
+ 		 */
+ 		if (ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) == 0)
+-			addrconf_add_linklocal(idev, &addr, 0);
++			addrconf_add_linklocal(idev, &addr, 0, pvd);
+ 		else if (prefix_route)
+-			addrconf_prefix_route(&addr, 64, idev->dev, 0, 0);
++			addrconf_prefix_route(&addr, 64, idev->dev, 0, 0, pvd);
+ 		break;
+ 	case IN6_ADDR_GEN_MODE_NONE:
+ 	default:
+@@ -3242,7 +3325,7 @@ static void addrconf_dev_config(struct net_device *dev)
+ 		return;
+ 	}
+ 
+-	idev = addrconf_add_dev(dev);
++	idev = addrconf_add_dev(dev, NULL);
+ 	if (IS_ERR(idev))
+ 		return;
+ 
+@@ -3251,7 +3334,7 @@ static void addrconf_dev_config(struct net_device *dev)
+ 	    idev->cnf.addr_gen_mode == IN6_ADDR_GEN_MODE_EUI64)
+ 		idev->cnf.addr_gen_mode = IN6_ADDR_GEN_MODE_RANDOM;
+ 
+-	addrconf_addr_gen(idev, false);
++	addrconf_addr_gen(idev, false, NULL);
+ }
+ 
+ #if IS_ENABLED(CONFIG_IPV6_SIT)
+@@ -3274,14 +3357,14 @@ static void addrconf_sit_config(struct net_device *dev)
+ 	}
+ 
+ 	if (dev->priv_flags & IFF_ISATAP) {
+-		addrconf_addr_gen(idev, false);
++		addrconf_addr_gen(idev, false, NULL);
+ 		return;
+ 	}
+ 
+ 	sit_add_v4_addrs(idev);
+ 
+ 	if (dev->flags&IFF_POINTOPOINT)
+-		addrconf_add_mroute(dev);
++		addrconf_add_mroute(dev, NULL);
+ }
+ #endif
+ 
+@@ -3298,9 +3381,9 @@ static void addrconf_gre_config(struct net_device *dev)
+ 		return;
+ 	}
+ 
+-	addrconf_addr_gen(idev, true);
++	addrconf_addr_gen(idev, true, NULL);
+ 	if (dev->flags & IFF_POINTOPOINT)
+-		addrconf_add_mroute(dev);
++		addrconf_add_mroute(dev, NULL);
+ }
+ #endif
+ 
+@@ -3314,7 +3397,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+ 	if (!ifp->rt || !ifp->rt->rt6i_node) {
+ 		struct rt6_info *rt, *prev;
+ 
+-		rt = addrconf_dst_alloc(idev, &ifp->addr, false);
++		rt = addrconf_dst_alloc(idev, &ifp->addr, ifp->pvd, false);
+ 		if (IS_ERR(rt))
+ 			return PTR_ERR(rt);
+ 
+@@ -3329,7 +3412,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+ 
+ 	if (!(ifp->flags & IFA_F_NOPREFIXROUTE)) {
+ 		addrconf_prefix_route(&ifp->addr, ifp->prefix_len,
+-				      idev->dev, 0, 0);
++				      idev->dev, 0, 0, ifp->pvd);
+ 	}
+ 
+ 	if (ifp->state == INET6_IFADDR_STATE_PREDAD)
+@@ -4207,13 +4290,24 @@ static void if6_seq_stop(struct seq_file *seq, void *v)
+ static int if6_seq_show(struct seq_file *seq, void *v)
+ {
+ 	struct inet6_ifaddr *ifp = (struct inet6_ifaddr *)v;
+-	seq_printf(seq, "%pi6 %02x %02x %02x %02x %8s\n",
++	seq_printf(seq,
++#ifdef CONFIG_NETPVD
++		ifp->pvd ?
++			"%pi6 %02x %02x %02x %02x %8s / %s\n" :
++			"%pi6 %02x %02x %02x %02x %8s\n",
++#else
++		"%pi6 %02x %02x %02x %02x %8s\n",
++#endif
+ 		   &ifp->addr,
+ 		   ifp->idev->dev->ifindex,
+ 		   ifp->prefix_len,
+ 		   ifp->scope,
+ 		   (u8) ifp->flags,
+-		   ifp->idev->dev->name);
++		   ifp->idev->dev->name
++#ifdef CONFIG_NETPVD
++		   , ifp->pvd ? ((struct net_pvd *) ifp->pvd)->name : "no pvd"
++#endif
++		   );
+ 	return 0;
+ }
+ 
+@@ -4479,7 +4573,7 @@ inet6_rtm_deladdr(struct sk_buff *skb, struct nlmsghdr *nlh,
+ }
+ 
+ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
+-			     u32 prefered_lft, u32 valid_lft)
++			     u32 prefered_lft, u32 valid_lft, void *pvd)
+ {
+ 	u32 flags;
+ 	clock_t expires;
+@@ -4526,13 +4620,17 @@ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
+ 	ifp->valid_lft = valid_lft;
+ 	ifp->prefered_lft = prefered_lft;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd_migrate_addr(pvd, ifp);
++#endif
++
+ 	spin_unlock_bh(&ifp->lock);
+ 	if (!(ifp->flags&IFA_F_TENTATIVE))
+ 		ipv6_ifa_notify(0, ifp);
+ 
+ 	if (!(ifa_flags & IFA_F_NOPREFIXROUTE)) {
+ 		addrconf_prefix_route(&ifp->addr, ifp->prefix_len, ifp->idev->dev,
+-				      expires, flags);
++				      expires, flags, ifp->pvd);
+ 	} else if (had_prefixroute) {
+ 		enum cleanup_prefix_rt_t action;
+ 		unsigned long rt_expires;
+@@ -4572,6 +4670,8 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	u32 valid_lft = INFINITY_LIFE_TIME, preferred_lft = INFINITY_LIFE_TIME;
+ 	u32 ifa_flags;
+ 	int err;
++	void *pvd = NULL;	/* FIXME : check how to carry pvd in nlmsg */
++
+ 
+ 	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFA_MAX, ifa_ipv6_policy,
+ 			  extack);
+@@ -4594,6 +4694,22 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 		valid_lft = INFINITY_LIFE_TIME;
+ 	}
+ 
++#ifdef	CONFIG_NETPVD
++	if (tb[IFA_PVD]) {
++		if (nla_len(tb[IFA_PVD]) > PVDNAMSIZ) {
++			return -EINVAL;
++		}
++		if (nla_len(tb[IFA_PVD]) == 0) {
++			pvd = NULL;
++		} else if ((pvd = pvd_get_by_name(
++					sock_net(skb->sk),
++					nla_data(tb[IFA_PVD]),
++					NULL, NULL)) == NULL) {
++			return -ESRCH;
++		}
++	}
++#endif
++
+ 	dev =  __dev_get_by_index(net, ifm->ifa_index);
+ 	if (!dev)
+ 		return -ENODEV;
+@@ -4612,14 +4728,14 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 		 */
+ 		return inet6_addr_add(net, ifm->ifa_index, pfx, peer_pfx,
+ 				      ifm->ifa_prefixlen, ifa_flags,
+-				      preferred_lft, valid_lft, extack);
++				      preferred_lft, valid_lft, extack, pvd);
+ 	}
+ 
+ 	if (nlh->nlmsg_flags & NLM_F_EXCL ||
+ 	    !(nlh->nlmsg_flags & NLM_F_REPLACE))
+ 		err = -EEXIST;
+ 	else
+-		err = inet6_addr_modify(ifa, ifa_flags, preferred_lft, valid_lft);
++		err = inet6_addr_modify(ifa, ifa_flags, preferred_lft, valid_lft, pvd);
+ 
+ 	in6_ifa_put(ifa);
+ 
+@@ -4722,6 +4838,18 @@ static int inet6_fill_ifaddr(struct sk_buff *skb, struct inet6_ifaddr *ifa,
+ 	if (nla_put_u32(skb, IFA_FLAGS, ifa->flags) < 0)
+ 		goto error;
+ 
++#ifdef	CONFIG_NETPVD
++	if (ifa->pvd) {
++		struct net_pvd *pvd = ifa->pvd;
++		char *pvdname = pvd->name;
++
++		if (! pvd->implicit_flag) {
++			if (nla_put(skb, IFA_PVD, strlen(pvdname) + 1, pvdname))
++				goto error;
++		}
++	}
++#endif
++
+ 	nlmsg_end(skb, nlh);
+ 	return 0;
+ 
+@@ -5083,6 +5211,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
+ 	array[DEVCONF_ADDR_GEN_MODE] = cnf->addr_gen_mode;
+ 	array[DEVCONF_DISABLE_POLICY] = cnf->disable_policy;
+ 	array[DEVCONF_NDISC_TCLASS] = cnf->ndisc_tclass;
++#ifdef CONFIG_NETPVD
++	array[DEVCONF_PARSE_PVD] = cnf->parse_pvd;
++#endif
+ }
+ 
+ static inline size_t inet6_ifla6_size(void)
+@@ -5568,7 +5699,7 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
+ 			addrconf_join_anycast(ifp);
+ 		if (!ipv6_addr_any(&ifp->peer_addr))
+ 			addrconf_prefix_route(&ifp->peer_addr, 128,
+-					      ifp->idev->dev, 0, 0);
++					      ifp->idev->dev, 0, 0, ifp->pvd);
+ 		break;
+ 	case RTM_DELADDR:
+ 		if (ifp->idev->cnf.forwarding)
+@@ -6390,6 +6521,15 @@ static const struct ctl_table addrconf_sysctl[] = {
+ 		.extra1		= (void *)&zero,
+ 		.extra2		= (void *)&two_five_five,
+ 	},
++#ifdef CONFIG_NETPVD
++	{
++		.procname       = "parse_pvd",
++		.data           = &ipv6_devconf.parse_pvd,
++		.maxlen         = sizeof(int),
++		.mode           = 0644,
++		.proc_handler   = proc_dointvec,
++	},
++#endif
+ 	{
+ 		/* sentinel */
+ 	}
+diff --git a/net/ipv6/anycast.c b/net/ipv6/anycast.c
+index 0bbab8a4b5d8..b1b4271cf8ad 100644
+--- a/net/ipv6/anycast.c
++++ b/net/ipv6/anycast.c
+@@ -262,7 +262,7 @@ int __ipv6_dev_ac_inc(struct inet6_dev *idev, const struct in6_addr *addr)
+ 		}
+ 	}
+ 
+-	rt = addrconf_dst_alloc(idev, addr, true);
++	rt = addrconf_dst_alloc(idev, addr, NULL, true);	/* FIXME : pvd == NULL for now */
+ 	if (IS_ERR(rt)) {
+ 		err = PTR_ERR(rt);
+ 		goto out;
+diff --git a/net/ipv6/datagram.c b/net/ipv6/datagram.c
+index a1f918713006..935350b76e7e 100644
+--- a/net/ipv6/datagram.c
++++ b/net/ipv6/datagram.c
+@@ -83,6 +83,18 @@ int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr)
+ 	}
+ 	ip6_datagram_flow_key_init(&fl6, sk);
+ 
++	#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection of the connect() process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		goto out;
++	}
++#endif
++
+ 	rcu_read_lock();
+ 	opt = flowlabel ? flowlabel->opt : rcu_dereference(np->opt);
+ 	final_p = fl6_update_dst(&fl6, opt, &final);
+@@ -117,6 +129,11 @@ int ip6_datagram_dst_update(struct sock *sk, bool fix_sk_saddr)
+ 
+ out:
+ 	fl6_sock_release(flowlabel);
++
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return err;
+ }
+ 
+diff --git a/net/ipv6/fib6_rules.c b/net/ipv6/fib6_rules.c
+index b240f24a6e52..5a4a87834d0f 100644
+--- a/net/ipv6/fib6_rules.c
++++ b/net/ipv6/fib6_rules.c
+@@ -146,6 +146,11 @@ static int fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
+ 					       ip6_dst_idev(&rt->dst)->dev,
+ 					       &flp6->daddr,
+ 					       rt6_flags2srcprefs(flags),
++#ifdef	CONFIG_NETPVD
++					       (flags & RT6_LOOKUP_F_PVD) ? rt->rt6i_pvd : NULL,
++#else
++					       NULL,
++#endif
+ 					       &saddr))
+ 				goto again;
+ 			if (!ipv6_prefix_equal(&saddr, &r->src.addr,
+diff --git a/net/ipv6/ip6_fib.c b/net/ipv6/ip6_fib.c
+index 217683d40f12..fafe61db8ed6 100644
+--- a/net/ipv6/ip6_fib.c
++++ b/net/ipv6/ip6_fib.c
+@@ -24,6 +24,7 @@
+ #include <linux/net.h>
+ #include <linux/route.h>
+ #include <linux/netdevice.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/init.h>
+ #include <linux/list.h>
+@@ -38,6 +39,10 @@
+ #include <net/ip6_fib.h>
+ #include <net/ip6_route.h>
+ 
++#ifdef CONFIG_NETPVD
++#include <net/pvd.h>
++#endif
++
+ static struct kmem_cache *fib6_node_kmem __read_mostly;
+ 
+ struct fib6_cleaner {
+@@ -2222,10 +2227,21 @@ static int ipv6_route_seq_show(struct seq_file *seq, void *v)
+ 	else
+ 		seq_puts(seq, "00000000000000000000000000000000");
+ 
+-	seq_printf(seq, " %08x %08x %08x %08x %8s\n",
++	seq_printf(seq, 
++#ifdef CONFIG_NETPVD
++		rt->rt6i_pvd ?
++			" %08x %08x %08x %08x %8s / %s\n" :
++			" %08x %08x %08x %08x %8s%s\n",
++#else
++		" %08x %08x %08x %08x %8s\n",
++#endif
+ 		   rt->rt6i_metric, atomic_read(&rt->dst.__refcnt),
+ 		   rt->dst.__use, rt->rt6i_flags,
+-		   rt->dst.dev ? rt->dst.dev->name : "");
++		   rt->dst.dev ? rt->dst.dev->name : ""
++#ifdef CONFIG_NETPVD
++		   , rt->rt6i_pvd ? ((struct net_pvd *) rt->rt6i_pvd)->name : ""
++#endif
++		   );
+ 	iter->w.leaf = NULL;
+ 	return 0;
+ }
+diff --git a/net/ipv6/ip6_output.c b/net/ipv6/ip6_output.c
+index 3763dc01e374..1fe6ac1d634d 100644
+--- a/net/ipv6/ip6_output.c
++++ b/net/ipv6/ip6_output.c
+@@ -33,6 +33,7 @@
+ #include <linux/net.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_arp.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/tcp.h>
+ #include <linux/route.h>
+@@ -962,6 +963,11 @@ static int ip6_dst_lookup_tail(struct net *net, const struct sock *sk,
+ 		rt = (*dst)->error ? NULL : (struct rt6_info *)*dst;
+ 		err = ip6_route_get_saddr(net, rt, &fl6->daddr,
+ 					  sk ? inet6_sk(sk)->srcprefs : 0,
++#ifdef	CONFIG_NETPVD
++					  fl6->pvd,
++#else
++					  NULL,
++#endif					  
+ 					  &fl6->saddr);
+ 		if (err)
+ 			goto out_err_release;
+diff --git a/net/ipv6/ip6_tunnel.c b/net/ipv6/ip6_tunnel.c
+index 1ee5584c3555..f4097d356d80 100644
+--- a/net/ipv6/ip6_tunnel.c
++++ b/net/ipv6/ip6_tunnel.c
+@@ -1105,7 +1105,7 @@ int ip6_tnl_xmit(struct sk_buff *skb, struct net_device *dev, __u8 dsfield,
+ 		}
+ 		if (t->parms.collect_md &&
+ 		    ipv6_dev_get_saddr(net, ip6_dst_idev(dst)->dev,
+-				       &fl6->daddr, 0, &fl6->saddr))
++				       &fl6->daddr, 0, /* PvD */NULL, &fl6->saddr))
+ 			goto tx_err_link_failure;
+ 		ndst = dst;
+ 	}
+diff --git a/net/ipv6/ndisc.c b/net/ipv6/ndisc.c
+index f61a5b613b52..b00b85ebdb2e 100644
+--- a/net/ipv6/ndisc.c
++++ b/net/ipv6/ndisc.c
+@@ -44,7 +44,9 @@
+ #ifdef CONFIG_SYSCTL
+ #include <linux/sysctl.h>
+ #endif
+-
++#ifdef CONFIG_NETPVD
++#include <net/pvd.h>
++#endif
+ #include <linux/if_addr.h>
+ #include <linux/if_ether.h>
+ #include <linux/if_arp.h>
+@@ -179,6 +181,28 @@ static inline void ndisc_fill_redirect_addr_option(struct sk_buff *skb,
+ 	ndisc_ops_fill_redirect_addr_option(skb->dev, skb, ops_data);
+ }
+ 
++#ifdef CONFIG_NETPVD
++static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
++											struct nd_opt_hdr *end,
++											bool parse_pvd,
++											int offset_in_pvd)
++{
++	int type;
++	if (!cur || ! end || cur >= end)
++		return NULL;
++	type = cur->nd_opt_type;
++	do {
++		cur = ((void *)cur) + (cur->nd_opt_len << 3);
++		/* if parse_pvd set to true and the current opt is of type PvD, 
++		jump to the next ND6 opt, the opt could be inside the PvD container */
++		if (parse_pvd && cur->nd_opt_type == ND_OPT_PVDID) {
++			cur = ((void *)cur) + offset_in_pvd;
++			printk("%s: jump inside pvd, opt type=%d", __func__, cur->nd_opt_type);
++		}
++	} while (cur < end && cur->nd_opt_type != type);
++	return (cur <= end && cur->nd_opt_type == type) ? cur : NULL;
++}
++#else
+ static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
+ 					    struct nd_opt_hdr *end)
+ {
+@@ -191,6 +215,7 @@ static struct nd_opt_hdr *ndisc_next_option(struct nd_opt_hdr *cur,
+ 	} while (cur < end && cur->nd_opt_type != type);
+ 	return cur <= end && cur->nd_opt_type == type ? cur : NULL;
+ }
++#endif
+ 
+ static inline int ndisc_is_useropt(const struct net_device *dev,
+ 				   struct nd_opt_hdr *opt)
+@@ -200,6 +225,28 @@ static inline int ndisc_is_useropt(const struct net_device *dev,
+ 		ndisc_ops_is_useropt(dev, opt->nd_opt_type);
+ }
+ 
++#ifdef CONFIG_NETPVD
++static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
++											struct nd_opt_hdr *cur,
++											struct nd_opt_hdr *end,
++											bool parse_pvd,
++											int offset_in_pvd)
++{
++	int type;
++	if (!cur || ! end || cur >= end)
++		return NULL;
++	do {
++		cur = ((void *)cur) + (cur->nd_opt_len << 3);
++		/* if parse_pvd set to true and the current opt is of type PvD, 
++		jump to the next ND6 opt, the opt could be inside the PvD container */
++		if (parse_pvd && cur->nd_opt_type == ND_OPT_PVDID) {
++			cur = ((void *)cur) + offset_in_pvd;
++			printk("%s: jump inside pvd, opt type=%d", __func__, cur->nd_opt_type);
++		}
++	} while (cur < end && !ndisc_is_useropt(dev, cur));
++	return (cur <= end && ndisc_is_useropt(dev, cur)) ? cur : NULL;
++}
++#else
+ static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
+ 					     struct nd_opt_hdr *cur,
+ 					     struct nd_opt_hdr *end)
+@@ -211,6 +258,162 @@ static struct nd_opt_hdr *ndisc_next_useropt(const struct net_device *dev,
+ 	} while (cur < end && !ndisc_is_useropt(dev, cur));
+ 	return cur <= end && ndisc_is_useropt(dev, cur) ? cur : NULL;
+ }
++#endif
++
++#ifdef	CONFIG_NETPVD
++/* 
++pvdid_parse_opt has two functionalities:
++1/ parse the PvD option header. Header information will be used to register/update kernel space PvD strucutre.
++2/ parse the ND6 options embeded inside the PvD option. As a result, it modifies the ND6 option pointers in ndopts.
++
++The two steps are required at different steps of RA message parsing.
++PvD registeration (relies on step 1/) happens rather after the entire PvD parsing (step 2/).
++Yet, step 2/ relies on step 1/ to calculate the offset to the ND6 options inside the PvD.
++
++As a result this pvdid_parse_opt is actually called twice throughout the processing of an RA:
++first when parsing the options in RA (both step 1 and 2 are exectuted, yet only the results of step2 is counted).
++once parsing is a success and sysctl options allows accepting ra and parse PvD, a PvD structure is prepared to be registered/updated.
++*/
++static int pvdid_parse_opt(const struct net_device *dev,
++		   struct nd_opt_hdr *nd_opt,  // pointer to pvd option buffer area
++		   struct pvd_header *pvd_hdr,  // where pvd header info is stored after parsing
++		   struct ndisc_options *ndopts)  // parsing amends the ndopts structure already parsed
++{
++	int l = nd_opt->nd_opt_len << 3;
++	struct nd_opt_pvdid *pvd = (struct nd_opt_pvdid *) nd_opt;
++
++	if (l < sizeof(struct nd_opt_pvdid)) {
++		printk("Invalid nd_opt_pvdid size (%d, expected at least %d)\n",
++			l,
++			(int) sizeof(struct nd_opt_pvdid));
++		return -1;
++	}
++
++	char pvd_name[PVDNAMSIZ] = {""};
++	int offset = 0;
++	int label_len = pvd->nd_opt_pvdid_name[offset];
++	int cap = PVDNAMSIZ - 1;  /* how many characters can be put inside pvd_name */
++
++	while(label_len>0 && cap>0) {
++		offset ++;
++		/* prevent overflow */
++		if (cap > label_len) {
++			strncat(pvd_name, (char *)&pvd->nd_opt_pvdid_name[offset], label_len);
++			strcat(pvd_name, ".");
++		} else {
++			strncat(pvd_name, (char *)&pvd->nd_opt_pvdid_name[offset], cap);
++		}
++		cap -= (label_len + 1);
++		offset += label_len;
++		label_len = pvd->nd_opt_pvdid_name[offset];
++	} 
++
++	/* strncat and strcat always ends with '\0' */
++	if (cap < 0) {
++		printk("PvD name too long\n");
++		return -1;
++	}
++
++	if (strlen(pvd_name) < 1) {
++		printk("0 pvd name length, probably format issue\n");
++		return -1;
++	}
++
++	int a_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 13) & 0x01;
++
++	/* skip the padding of PvD ID */
++	offset += sizeof(struct nd_opt_pvdid);  /* counting the PvD header, where PvD ID stops */
++	offset = (offset + 8)/8 * 8;  /* calc the padding in PvD ID */
++	/* if a_flag set, store where the RA header starts, else set to 0 */
++	int ra_offset = (a_flag == 0) ? 0 : offset;
++	l -= offset;
++
++	/* skip the ra header if present */
++	if (a_flag) {
++		l -= sizeof(struct ra_msg);
++		offset += sizeof(struct ra_msg);
++	}
++	
++	if (l < 0) {
++		printk("Negtive remaining length after removing PvD header and RA header (if a-flag set)\n");
++		return -1;
++	}
++
++	/* result of step1, if pvd_hdr present means the PvD header information is wanted */
++	if (pvd_hdr) {
++		memset(pvd_hdr, 0, sizeof(struct pvd_header));
++		strncpy(pvd_hdr->pvdname, pvd_name, strlen(pvd_name));
++		pvd_hdr->pvd_h_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 15) & 0x01;
++		pvd_hdr->pvd_l_flag = (ntohs(pvd->nd_opt_pvdid_flags) >> 14) & 0x01;
++		pvd_hdr->pvd_a_flag = ra_offset;
++		pvd_hdr->pvd_sequence_number = ntohs(pvd->nd_opt_pvdid_sequence_number);
++		pvd_hdr->offset_to_opt = offset;
++	}
++
++	/* actions for step2, it modifies the ndopts passed in as argument */
++	if (ndopts) {
++		u8 *nd_opt_in_pvd = ((u8 *)nd_opt) + offset;
++		
++		while(l) {
++		struct nd_opt_hdr *nd_opt_temp = (struct nd_opt_hdr *)nd_opt_in_pvd;
++		int opt_temp_len = nd_opt_temp->nd_opt_len << 3;
++		
++		if (l < opt_temp_len || opt_temp_len == 0) {
++			printk("%s: PvD %s has broken Nd6 option: type=%d, len=%d\n", 
++				   __func__, pvd_name,
++				   nd_opt_temp->nd_opt_type,
++				   nd_opt_temp->nd_opt_len);
++			return -1;
++		}
++		
++		/* device specific parser if any */
++		if (ndisc_ops_parse_options(dev, nd_opt_temp, ndopts))
++			goto pvd_next_opt;
++
++			switch (nd_opt_temp->nd_opt_type) {
++				case ND_OPT_SOURCE_LL_ADDR:
++				case ND_OPT_TARGET_LL_ADDR:
++				case ND_OPT_MTU:
++				case ND_OPT_NONCE:
++				case ND_OPT_REDIRECT_HDR:
++					if (ndopts->nd_opt_array[nd_opt_temp->nd_opt_type])
++						printk("%s: ND6 option overwritten by PvD %s: type=%d\n",
++						__func__, pvd_name, nd_opt_temp->nd_opt_type);
++					ndopts->nd_opt_array[nd_opt_temp->nd_opt_type] = nd_opt_temp;
++					break;
++				case ND_OPT_PREFIX_INFO:
++					ndopts->nd_opts_pi_end = nd_opt_temp;
++					if (!ndopts->nd_opts_pi)
++						ndopts->nd_opts_pi = nd_opt_temp;
++						break;
++		#ifdef CONFIG_IPV6_ROUTE_INFO
++				case ND_OPT_ROUTE_INFO:
++					ndopts->nd_opts_ri_end = nd_opt_temp;
++					if (!ndopts->nd_opts_ri)
++						ndopts->nd_opts_ri = nd_opt_temp;
++					break;
++		#endif
++				default:
++					if (ndisc_is_useropt(dev, nd_opt_temp)) {
++						ndopts->nd_useropts_end = nd_opt_temp;
++							if (!ndopts->nd_useropts)
++							ndopts->nd_useropts = nd_opt_temp;
++					} else {
++						ND_PRINTK(2, notice,
++								"%s: option ignored in PvD %s: type=%d, len=%d\n",
++								__func__,
++								nd_opt_temp->nd_opt_type,
++								nd_opt_temp->nd_opt_len);
++					}
++			}
++	pvd_next_opt:
++		l -= opt_temp_len;
++		nd_opt_in_pvd += opt_temp_len;
++		}
++	}
++	return 0;
++}
++#endif
+ 
+ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
+ 					  u8 *opt, int opt_len,
+@@ -255,6 +458,22 @@ struct ndisc_options *ndisc_parse_options(const struct net_device *dev,
+ 			if (!ndopts->nd_opts_ri)
+ 				ndopts->nd_opts_ri = nd_opt;
+ 			break;
++#endif
++#ifdef	CONFIG_NETPVD
++		case ND_OPT_PVDID:
++			if (ipv6_parse_pvd(__in6_dev_get(dev))) {
++				if (ndopts->nd_opt_pvdid) {
++					ND_PRINTK(2, warn,
++						"%s: duplicated PVD option found. Ignored\n",
++						__func__);
++				} else {
++					/* ND6 options in nd_opt(pvd) will be refelected in ndopts;
++					 yet we still need to note the position of PvD option for PvD header parsing */
++					if (pvdid_parse_opt(dev, nd_opt, NULL, ndopts)==0)
++						ndopts->nd_opt_pvdid = nd_opt;
++				}
++			}
++			break;
+ #endif
+ 		default:
+ 			if (ndisc_is_useropt(dev, nd_opt)) {
+@@ -521,6 +740,7 @@ void ndisc_send_na(struct net_device *dev, const struct in6_addr *daddr,
+ 	} else {
+ 		if (ipv6_dev_get_saddr(dev_net(dev), dev, daddr,
+ 				       inet6_sk(dev_net(dev)->ipv6.ndisc_sk)->srcprefs,
++					   NULL, /* pvd */
+ 				       &tmpaddr))
+ 			return;
+ 		src_addr = &tmpaddr;
+@@ -1162,6 +1382,12 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 	unsigned int pref = 0;
+ 	__u32 old_if_flags;
+ 	bool send_ifinfo_notify = false;
++#ifdef	CONFIG_NETPVD
++	struct net_pvd *pvd = NULL;
++	struct pvd_header pvd_hdr;
++#else
++	void *pvd = NULL;
++#endif
+ 
+ 	__u8 *opt = (__u8 *)(ra_msg + 1);
+ 
+@@ -1210,6 +1436,65 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 		goto skip_linkparms;
+ 	}
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * We want to link all RA options to their PvD, if
++	 * specified. We create the net_pvd structure now,
++	 * and will use it when needed
++	 * For now, items of interest are :
++	 * + the user options (such as rdnss and dnssl)
++	 * + the router's lla
++	 * + the advertised prefixes
++	 * + the incoming device (skb->dev)
++	 * + and of course the pvd name
++	 */
++	
++	/* extract the pvd option header info with its parser */
++	if (ipv6_parse_pvd(in6_dev) && ndopts.nd_opt_pvdid &&
++		pvdid_parse_opt(skb->dev, ndopts.nd_opt_pvdid, &pvd_hdr, NULL) == 0) {
++		if ((pvd = register_pvd(
++				dev_net(skb->dev),
++				pvd_hdr.pvdname,
++				skb->dev,
++				&ipv6_hdr(skb)->saddr)) == NULL) {
++			ND_PRINTK(0, err, "RA: can't allocate pvd %s\n",
++				 pvd_hdr.pvdname);
++			return;
++		}
++		/* only notify via rtnetlink after the ND6 options are handled */
++		pvd->notifications_blocked = true;
++
++		pvd->h_flag = pvd_hdr.pvd_h_flag;
++		pvd->l_flag = pvd_hdr.pvd_l_flag;
++		pvd->a_flag = (pvd_hdr.pvd_a_flag > 0) ? 1 : 0;
++		pvd->sequence_number = pvd_hdr.pvd_sequence_number;
++
++		if (pvd_hdr.pvd_a_flag != 0) {
++			/* replace the RA header with that inside the PvD option if a flag is set */
++			/* reminde that when a flag is set, pvd_hdr.pvd_a_flag tells the byte offset in pvd option to RA header */
++			ra_msg = (struct ra_msg *)(((u8 *)ndopts.nd_opt_pvdid) + pvd_hdr.pvd_a_flag);
++			ND_PRINTK(2, info, 
++				      "%s: RA header overwritten by PvD option:%s",
++					   __func__, pvd_hdr.pvdname);
++		}
++	}
++	else {
++		/*
++		 * In case of that parse_pvd is turned off, implicit pvd is still created.
++		 * No nd_opt_pvdid options. Creating implicit pvd
++		 */
++		if ((pvd = register_pvd(
++				dev_net(skb->dev),
++					NULL,
++					skb->dev,
++					&ipv6_hdr(skb)->saddr)) == NULL) {
++				ND_PRINTK(0, err, "RA: can't allocate implicit pvd\n");
++			return;
++		}
++		memset(&pvd_hdr, 0, sizeof(struct pvd_header));  //NOTE: set to NULL, see how it is used later on
++	}
++#endif
++
+ #ifdef CONFIG_IPV6_NDISC_NODETYPE
+ 	/* skip link-specific parameters from interior routers */
+ 	if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT) {
+@@ -1281,7 +1566,7 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 				  "RA: %s got default router without neighbour\n",
+ 				  __func__);
+ 			ip6_rt_put(rt);
+-			return;
++			goto out_pvd;
+ 		}
+ 	}
+ 	if (rt && lifetime == 0) {
+@@ -1299,7 +1584,7 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 			ND_PRINTK(0, err,
+ 				  "RA: %s failed to add default route\n",
+ 				  __func__);
+-			return;
++			goto out_pvd;
+ 		}
+ 
+ 		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
+@@ -1308,13 +1593,22 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 				  "RA: %s got default router without neighbour\n",
+ 				  __func__);
+ 			ip6_rt_put(rt);
+-			return;
++			goto out_pvd;
+ 		}
+ 		neigh->flags |= NTF_ROUTER;
+ 	} else if (rt) {
+ 		rt->rt6i_flags = (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
+ 	}
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * Make sure this default route is linked to the pvd
++	 */
++	if (rt)
++		ND_PRINTK(3, info, "%s calls pvd_migrate_route() for default route\n", __func__);
++		pvd_migrate_route(pvd, rt);
++#endif
++
+ 	if (rt)
+ 		rt6_set_expires(rt, jiffies + (HZ * lifetime));
+ 	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
+@@ -1389,6 +1683,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 			if (!lladdr) {
+ 				ND_PRINTK(2, warn,
+ 					  "RA: invalid link-layer address length\n");
++				if (pvd)
++					unregister_pvd(pvd);
+ 				goto out;
+ 			}
+ 		}
+@@ -1404,6 +1700,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 		ND_PRINTK(2, info,
+ 			  "RA: %s, accept_ra is false for dev: %s\n",
+ 			  __func__, skb->dev->name);
++		if (pvd)
++			unregister_pvd(pvd);
+ 		goto out;
+ 	}
+ 
+@@ -1419,9 +1717,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 
+ 	if (in6_dev->cnf.accept_ra_rtr_pref && ndopts.nd_opts_ri) {
+ 		struct nd_opt_hdr *p;
++#ifdef CONFIG_NETPVD
++		for (p = ndopts.nd_opts_ri;
++			 p;
++			 p = ndisc_next_option(p, ndopts.nd_opts_ri_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
++#else
+ 		for (p = ndopts.nd_opts_ri;
+ 		     p;
+-		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end)) {
++		     p = ndisc_next_option(p, ndopts.nd_opts_ri_end))
++#endif 
++		{
+ 			struct route_info *ri = (struct route_info *)p;
+ #ifdef CONFIG_IPV6_NDISC_NODETYPE
+ 			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
+@@ -1436,7 +1741,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
+ 				continue;
+ 			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
+-				      &ipv6_hdr(skb)->saddr);
++				      &ipv6_hdr(skb)->saddr,
++					  pvd);
+ 		}
+ 	}
+ 
+@@ -1449,18 +1755,26 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 		ND_PRINTK(2, info,
+ 			  "RA: %s, nodetype is NODEFAULT (interior routes), dev: %s\n",
+ 			  __func__, skb->dev->name);
+-		goto out;
++		goto out_pvd;
+ 	}
+ #endif
+ 
+ 	if (in6_dev->cnf.accept_ra_pinfo && ndopts.nd_opts_pi) {
+ 		struct nd_opt_hdr *p;
++#ifdef CONFIG_NETPVD
++		for (p = ndopts.nd_opts_pi;
++		     p;
++			 p = ndisc_next_option(p, ndopts.nd_opts_pi_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
++#else
+ 		for (p = ndopts.nd_opts_pi;
+ 		     p;
+-		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
++		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end))
++#endif	
++		{
+ 			addrconf_prefix_rcv(skb->dev, (u8 *)p,
+ 					    (p->nd_opt_len) << 3,
+-					    ndopts.nd_opts_src_lladdr != NULL);
++					    ndopts.nd_opts_src_lladdr != NULL,
++						pvd);
+ 		}
+ 	}
+ 
+@@ -1485,10 +1799,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 
+ 	if (ndopts.nd_useropts) {
+ 		struct nd_opt_hdr *p;
++#ifdef CONFIG_NETPVD
+ 		for (p = ndopts.nd_useropts;
+ 		     p;
+ 		     p = ndisc_next_useropt(skb->dev, p,
+-					    ndopts.nd_useropts_end)) {
++			 						ndopts.nd_useropts_end,
++									ipv6_parse_pvd(in6_dev), 
++									pvd_hdr.offset_to_opt))
++#else
++		for (p = ndopts.nd_useropts;
++		     p;
++		     p = ndisc_next_useropt(skb->dev, p,
++					    ndopts.nd_useropts_end))
++#endif
++		{
+ 			ndisc_ra_useropt(skb, p);
+ 		}
+ 	}
+@@ -1496,6 +1820,49 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+ 	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
+ 		ND_PRINTK(2, warn, "RA: invalid RA options\n");
+ 	}
++
++out_pvd :
++#ifdef	CONFIG_NETPVD
++	if (! pvd)
++		goto out;
++
++	/*
++	 * We want to catch RDNSS/DNSSL options to associate them
++	 * with a PvD if defined in the RA. If no PvD, no need
++	 * to parse them. For now, we only handle the lifetime and
++	 * do not bother to parse the option itself (especially the
++	 * names). The applications will retrieve the option and
++	 * will have to extract the DNSSL/RDNSS fields if they
++	 * want to)
++	 */
++	if (ndopts.nd_useropts) {
++		struct nd_opt_hdr *p;
++		for (p = ndopts.nd_useropts;
++		     p;
++		     p = ndisc_next_useropt(skb->dev, p,
++					    			ndopts.nd_useropts_end,
++									ipv6_parse_pvd(in6_dev),
++									pvd_hdr.offset_to_opt)) {
++			if (p->nd_opt_type == ND_OPT_RDNSS) {
++				pvd_register_rdnss(pvd, p);
++			} else if (p->nd_opt_type == ND_OPT_DNSSL) {
++				pvd_register_dnssl(pvd, p);
++			}
++		}
++	}
++
++	/*
++	 * rtnl notification must happen last because the application
++	 * could query the pvd attributes before we had a chance to
++	 * update them (unfortunately, this is not sufficient, because
++	 * routes and addresses creation above may have also issued
++	 * some notifications)
++	 */
++	pvd->notifications_blocked = false;
++
++	pvd_rtnl_notify(pvd, PVD_UPDATE);
++#endif
++
+ out:
+ 	ip6_rt_put(rt);
+ 	if (neigh)
+diff --git a/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c b/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c
+index 98f61fcb9108..969a4a893d74 100644
+--- a/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c
++++ b/net/ipv6/netfilter/nf_nat_masquerade_ipv6.c
+@@ -40,7 +40,8 @@ nf_nat_masquerade_ipv6(struct sk_buff *skb, const struct nf_nat_range *range,
+ 			 ctinfo == IP_CT_RELATED_REPLY)));
+ 
+ 	if (ipv6_dev_get_saddr(nf_ct_net(ct), out,
+-			       &ipv6_hdr(skb)->daddr, 0, &src) < 0)
++			       &ipv6_hdr(skb)->daddr, 0, 
++				   /*PvD*/ NULL, &src) < 0)
+ 		return NF_DROP;
+ 
+ 	nat = nf_ct_nat_ext_add(ct);
+diff --git a/net/ipv6/route.c b/net/ipv6/route.c
+index a560fb1d0230..14d0e77234bc 100644
+--- a/net/ipv6/route.c
++++ b/net/ipv6/route.c
+@@ -36,6 +36,7 @@
+ #include <linux/net.h>
+ #include <linux/route.h>
+ #include <linux/netdevice.h>
++#include <linux/inet.h>
+ #include <linux/in6.h>
+ #include <linux/mroute6.h>
+ #include <linux/init.h>
+@@ -410,6 +411,10 @@ static void ip6_dst_destroy(struct dst_entry *dst)
+ 	}
+ 
+ 	dst->from = NULL;
++#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	pvd_migrate_route(NULL, rt);
++#endif
+ 	dst_release(from);
+ }
+ 
+@@ -488,12 +493,18 @@ static struct rt6_info *rt6_multipath_select(struct rt6_info *match,
+ 
+ /*
+  *	Route lookup. rcu_read_lock() should be held.
++ *
++ *	Thierry Danis: We also perform a pvd lookup here : the selected route must
++ *	match both the iface and the pvd. Loopback routes match any
++ *	pvd
+  */
++ 
+ 
+ static inline struct rt6_info *rt6_device_match(struct net *net,
+ 						    struct rt6_info *rt,
+ 						    const struct in6_addr *saddr,
+ 						    int oif,
++							void *pvd,
+ 						    int flags)
+ {
+ 	struct rt6_info *local = NULL;
+@@ -505,6 +516,20 @@ static inline struct rt6_info *rt6_device_match(struct net *net,
+ 	for (sprt = rt; sprt; sprt = rcu_dereference(sprt->dst.rt6_next)) {
+ 		struct net_device *dev = sprt->dst.dev;
+ 
++#ifdef	CONFIG_NETPVD
++		printk("rt6_device_match called (pvd = %p)\n", pvd);
++		if (flags & RT6_LOOKUP_F_PVD) {
++			printk("rt6_device_match  : RT6_LOOKUP_F_PVD requested\n");
++			if (! (dev->flags & IFF_LOOPBACK) &&
++					sprt->rt6i_pvd != pvd) {
++				printk("rt6_device_match : dont match (loopback = %s, rtpvd = %p)\n",
++					(dev->flags & IFF_LOOPBACK) ? "true" : "false",
++					sprt->rt6i_pvd);
++				continue;
++			}
++		}
++#endif
++
+ 		if (oif) {
+ 			if (dev->ifindex == oif)
+ 				return sprt;
+@@ -713,7 +738,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
+ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 				     struct rt6_info *leaf,
+ 				     struct rt6_info *rr_head,
+-				     u32 metric, int oif, int strict,
++				     u32 metric, int oif, void *pvd, int strict,
+ 				     bool *do_rr)
+ {
+ 	struct rt6_info *rt, *match, *cont;
+@@ -722,6 +747,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 	match = NULL;
+ 	cont = NULL;
+ 	for (rt = rr_head; rt; rt = rcu_dereference(rt->dst.rt6_next)) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		if (rt->rt6i_metric != metric) {
+ 			cont = rt;
+ 			break;
+@@ -732,6 +762,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 
+ 	for (rt = leaf; rt && rt != rr_head;
+ 	     rt = rcu_dereference(rt->dst.rt6_next)) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		if (rt->rt6i_metric != metric) {
+ 			cont = rt;
+ 			break;
+@@ -743,14 +778,20 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 	if (match || !cont)
+ 		return match;
+ 
+-	for (rt = cont; rt; rt = rcu_dereference(rt->dst.rt6_next))
++	for (rt = cont; rt; rt = rcu_dereference(rt->dst.rt6_next)) {
++#ifdef	CONFIG_NETPVD
++		if (pvd != NULL && rt->rt6i_pvd != pvd) {
++			continue;
++		}
++#endif
+ 		match = find_match(rt, oif, strict, &mpri, match, do_rr);
++	}
+ 
+ 	return match;
+ }
+ 
+ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
+-				   int oif, int strict)
++				   int oif, void *pvd, int strict)
+ {
+ 	struct rt6_info *leaf = rcu_dereference(fn->leaf);
+ 	struct rt6_info *match, *rt0;
+@@ -777,7 +818,7 @@ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
+ 	if (fn->fn_bit != key_plen)
+ 		return net->ipv6.ip6_null_entry;
+ 
+-	match = find_rr_leaf(fn, leaf, rt0, rt0->rt6i_metric, oif, strict,
++	match = find_rr_leaf(fn, leaf, rt0, rt0->rt6i_metric, oif, pvd, strict,
+ 			     &do_rr);
+ 
+ 	if (do_rr) {
+@@ -806,7 +847,7 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
+ 
+ #ifdef CONFIG_IPV6_ROUTE_INFO
+ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+-		  const struct in6_addr *gwaddr)
++		  const struct in6_addr *gwaddr, void *pvd)
+ {
+ 	struct net *net = dev_net(dev);
+ 	struct route_info *rinfo = (struct route_info *) opt;
+@@ -815,6 +856,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+ 	unsigned long lifetime;
+ 	struct rt6_info *rt;
+ 
++#ifdef CONFIG_NETPVD
++	printk("rt6_route_rcv called (pvd %s)\n",
++		pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>");
++#endif
++
+ 	if (len < sizeof(struct route_info)) {
+ 		return -EINVAL;
+ 	}
+@@ -861,12 +907,25 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+ 		rt = NULL;
+ 	}
+ 
++#ifdef	CONFIG_NETPVD
++	{
++		char sAddr[64];
++		printk("rt6_route_rcv : route = %s\n",
++			prefix ? addr6tostr(prefix->s6_addr, sAddr) : "<no prefix>");
++	}
++#endif
++
+ 	if (!rt && lifetime)
+ 		rt = rt6_add_route_info(net, prefix, rinfo->prefix_len, gwaddr,
+ 					dev, pref);
+ 	else if (rt)
+ 		rt->rt6i_flags = RTF_ROUTEINFO |
+ 				 (rt->rt6i_flags & ~RTF_PREF_MASK) | RTF_PREF(pref);
++	
++#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	pvd_migrate_route(pvd, rt);
++#endif
+ 
+ 	if (rt) {
+ 		if (!addrconf_finite_timeout(lifetime))
+@@ -921,16 +980,20 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
+ {
+ 	struct rt6_info *rt, *rt_cache;
+ 	struct fib6_node *fn;
++	void *pvd = NULL; /* WQ: CONFIG_NETPVD ?*/
+ 
+ 	rcu_read_lock();
+ 	fn = fib6_lookup(&table->tb6_root, &fl6->daddr, &fl6->saddr);
+ restart:
+ 	rt = rcu_dereference(fn->leaf);
++#ifdef	CONFIG_NETPVD
++	pvd = fl6->pvd;
++#endif
+ 	if (!rt) {
+ 		rt = net->ipv6.ip6_null_entry;
+ 	} else {
+ 		rt = rt6_device_match(net, rt, &fl6->saddr,
+-				      fl6->flowi6_oif, flags);
++				      fl6->flowi6_oif, pvd, flags);
+ 		if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
+ 			rt = rt6_multipath_select(rt, fl6,
+ 						  fl6->flowi6_oif, flags);
+@@ -1653,6 +1716,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+ 	struct fib6_node *fn, *saved_fn;
+ 	struct rt6_info *rt, *rt_cache;
+ 	int strict = 0;
++	void *pvd = NULL; /* WQ: CONFIG_NETPVD ?*/
+ 
+ 	strict |= flags & RT6_LOOKUP_F_IFACE;
+ 	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
+@@ -1667,8 +1731,12 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+ 	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
+ 		oif = 0;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd = fl6->pvd;
++#endif
++
+ redo_rt6_select:
+-	rt = rt6_select(net, fn, oif, strict);
++	rt = rt6_select(net, fn, oif, pvd, strict);
+ 	if (rt->rt6i_nsiblings)
+ 		rt = rt6_multipath_select(rt, fl6, oif, strict);
+ 	if (rt == net->ipv6.ip6_null_entry) {
+@@ -1884,6 +1952,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
+ 	    (fl6->flowi6_oif && any_src))
+ 		flags |= RT6_LOOKUP_F_IFACE;
+ 
++#ifdef	CONFIG_NETPVD
++	if (sk && sk->sk_pvd_bind_type == PVD_BIND_ONEPVD && fl6->pvd) {
++		flags |= RT6_LOOKUP_F_PVD;
++	}
++#endif
++
+ 	if (!any_src)
+ 		flags |= RT6_LOOKUP_F_HAS_SADDR;
+ 	else if (sk)
+@@ -2756,12 +2830,23 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg,
+ 
+ 	cfg->fc_nlinfo.nl_net = dev_net(dev);
+ 
++#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	pvd_migrate_route(cfg->fc_pvd, rt);
++#endif
++
+ 	return rt;
+ out:
+ 	if (dev)
+ 		dev_put(dev);
+ 	if (idev)
+ 		in6_dev_put(idev);
++
++#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	pvd_migrate_route(NULL, rt);	/* deassociate rt and its pvd */
++#endif
++
+ 	if (rt)
+ 		dst_release_immediate(&rt->dst);
+ 
+@@ -3147,7 +3232,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
+ 	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
+ 	cfg.fc_dst = *prefix;
+ 	cfg.fc_gateway = *gwaddr;
+-
++#ifdef	CONFIG_NETPVD
++	cfg.fc_pvd = NULL;
++#endif
+ 	/* We should treat it as a default route if prefix length is 0. */
+ 	if (!prefixlen)
+ 		cfg.fc_flags |= RTF_DEFAULT;
+@@ -3198,6 +3285,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
+ 	};
+ 
+ 	cfg.fc_gateway = *gwaddr;
++#ifdef	CONFIG_NETPVD
++	cfg.fc_pvd = NULL;
++#endif
+ 
+ 	if (!ip6_route_add(&cfg, NULL)) {
+ 		struct fib6_table *table;
+@@ -3366,6 +3456,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
+ 
+ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+ 				    const struct in6_addr *addr,
++					void *pvd,
+ 				    bool anycast)
+ {
+ 	u32 tb_id;
+@@ -3383,6 +3474,10 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+ 	rt->dst.input = ip6_input;
+ 	rt->dst.output = ip6_output;
+ 	rt->rt6i_idev = idev;
++#ifdef	CONFIG_NETPVD
++	printk("%s calls pvd_migrate_route()\n", __func__);
++	pvd_migrate_route(pvd, rt);
++#endif
+ 
+ 	rt->rt6i_protocol = RTPROT_KERNEL;
+ 	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
+@@ -3680,6 +3775,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 			goto errout;
+ 	}
+ 
++#ifdef	CONFIG_NETPVD
++	if (tb[RTA_PVD]) {
++		if (nla_len(tb[RTA_PVD]) > PVDNAMSIZ) {
++			err = -EINVAL;
++			goto errout;
++		}
++		if (nla_len(tb[RTA_PVD]) == 0) {
++			cfg->fc_pvd = NULL;
++		} else if ((cfg->fc_pvd = 
++				pvd_get_by_name(
++					sock_net(skb->sk),
++					nla_data(tb[RTA_PVD]),
++					NULL,
++					NULL)) == NULL) {
++			err = -ESRCH;
++			goto errout;
++		}
++	}
++#endif
++
+ 	if (tb[RTA_EXPIRES]) {
+ 		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
+ 
+@@ -4142,7 +4257,7 @@ static int rt6_fill_node(struct net *net,
+ 				goto nla_put_failure;
+ 	} else if (dst) {
+ 		struct in6_addr saddr_buf;
+-		if (ip6_route_get_saddr(net, rt, dst, 0, &saddr_buf) == 0 &&
++		if (ip6_route_get_saddr(net, rt, dst, 0, /* pvd*/ NULL, &saddr_buf) == 0 &&
+ 		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
+ 			goto nla_put_failure;
+ 	}
+@@ -4197,6 +4312,17 @@ static int rt6_fill_node(struct net *net,
+ 	if (nla_put_u8(skb, RTA_PREF, IPV6_EXTRACT_PREF(rt->rt6i_flags)))
+ 		goto nla_put_failure;
+ 
++#ifdef	CONFIG_NETPVD
++	if (rt->rt6i_pvd) {
++		struct net_pvd *pvd = rt->rt6i_pvd;
++		char *pvdname = pvd->name;
++
++		if (! pvd->implicit_flag) {
++			if (nla_put(skb, RTA_PVD, strlen(pvdname) + 1, pvdname))
++				goto nla_put_failure;
++		}
++	}
++#endif
+ 
+ 	nlmsg_end(skb, nlh);
+ 	return 0;
+diff --git a/net/ipv6/seg6_iptunnel.c b/net/ipv6/seg6_iptunnel.c
+index bd6cc688bd19..6d8f42ad7d82 100644
+--- a/net/ipv6/seg6_iptunnel.c
++++ b/net/ipv6/seg6_iptunnel.c
+@@ -84,6 +84,7 @@ static void set_tun_src(struct net *net, struct net_device *dev,
+ 		memcpy(saddr, tun_src, sizeof(struct in6_addr));
+ 	} else {
+ 		ipv6_dev_get_saddr(net, dev, daddr, IPV6_PREFER_SRC_PUBLIC,
++				   /* PvD */ NULL,
+ 				   saddr);
+ 	}
+ 
+diff --git a/net/ipv6/tcp_ipv6.c b/net/ipv6/tcp_ipv6.c
+index 7178476b3d2f..a7da0072d80c 100644
+--- a/net/ipv6/tcp_ipv6.c
++++ b/net/ipv6/tcp_ipv6.c
+@@ -31,6 +31,7 @@
+ #include <linux/sockios.h>
+ #include <linux/net.h>
+ #include <linux/jiffies.h>
++#include <linux/inet.h>
+ #include <linux/in.h>
+ #include <linux/in6.h>
+ #include <linux/netdevice.h>
+@@ -249,6 +250,18 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
+ 	fl6.fl6_sport = inet->inet_sport;
+ 	fl6.flowi6_uid = sk->sk_uid;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection of the connect() process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		goto failure;
++	}
++#endif
++
+ 	opt = rcu_dereference_protected(np->opt, lockdep_sock_is_held(sk));
+ 	final_p = fl6_update_dst(&fl6, opt, &final);
+ 
+@@ -308,6 +321,10 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
+ 	if (err)
+ 		goto late_failure;
+ 
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return 0;
+ 
+ late_failure:
+@@ -315,6 +332,11 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
+ failure:
+ 	inet->inet_dport = 0;
+ 	sk->sk_route_caps = 0;
++
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
++
+ 	return err;
+ }
+ 
+diff --git a/net/ipv6/udp.c b/net/ipv6/udp.c
+index 3f30fa313bf2..fc4a1306a027 100644
+--- a/net/ipv6/udp.c
++++ b/net/ipv6/udp.c
+@@ -1135,6 +1135,10 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+ 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
+ 	struct sockcm_cookie sockc;
+ 
++#ifdef	CONFIG_NETPVD
++	fl6.pvd = NULL;
++#endif
++
+ 	ipc6.hlimit = -1;
+ 	ipc6.tclass = -1;
+ 	ipc6.dontfrag = -1;
+@@ -1264,6 +1268,20 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+ 	fl6.flowi6_mark = sk->sk_mark;
+ 	fl6.flowi6_uid = sk->sk_uid;
+ 
++#ifdef	CONFIG_NETPVD
++	/*
++	 * fl6.pvd will only be used during the route and
++	 * source address selection process
++	 *
++	 * We can and must pvd_put() it before returning
++	 */
++	if ((err = pvd_getboundpvd(sk, (struct net_pvd **) &fl6.pvd)) != 0) {
++		return err;
++	}
++	/* printk("udpv6_sendmsg : pvd %s selected\n",
++			fl6.pvd ? ((struct net_pvd *) fl6.pvd)->name : "<no pvd>"); */
++#endif
++
+ 	if (msg->msg_controllen) {
+ 		opt = &opt_space;
+ 		memset(opt, 0, sizeof(struct ipv6_txoptions));
+@@ -1273,11 +1291,17 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+ 		err = ip6_datagram_send_ctl(sock_net(sk), sk, msg, &fl6, &ipc6, &sockc);
+ 		if (err < 0) {
+ 			fl6_sock_release(flowlabel);
++#ifdef	CONFIG_NETPVD
++			pvd_put(fl6.pvd);
++#endif
+ 			return err;
+ 		}
+ 		if ((fl6.flowlabel&IPV6_FLOWLABEL_MASK) && !flowlabel) {
+ 			flowlabel = fl6_sock_lookup(sk, fl6.flowlabel);
+ 			if (!flowlabel)
++#ifdef	CONFIG_NETPVD
++			pvd_put(fl6.pvd);
++#endif
+ 				return -EINVAL;
+ 		}
+ 		if (!(opt->opt_nflen|opt->opt_flen))
+@@ -1396,6 +1420,9 @@ int udpv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+ 	}
+ 
+ out:
++#ifdef	CONFIG_NETPVD
++	pvd_put(fl6.pvd);
++#endif
+ 	dst_release(dst);
+ 	fl6_sock_release(flowlabel);
+ 	txopt_put(opt_to_free);
+diff --git a/net/ipv6/xfrm6_policy.c b/net/ipv6/xfrm6_policy.c
+index 885ade234a49..7000015d0581 100644
+--- a/net/ipv6/xfrm6_policy.c
++++ b/net/ipv6/xfrm6_policy.c
+@@ -66,7 +66,7 @@ static int xfrm6_get_saddr(struct net *net, int oif,
+ 		return -EHOSTUNREACH;
+ 
+ 	dev = ip6_dst_idev(dst)->dev;
+-	ipv6_dev_get_saddr(dev_net(dev), dev, &daddr->in6, 0, &saddr->in6);
++	ipv6_dev_get_saddr(dev_net(dev), dev, &daddr->in6, 0, /* PvD */ NULL, &saddr->in6);
+ 	dst_release(dst);
+ 	return 0;
+ }
+diff --git a/net/netfilter/ipvs/ip_vs_xmit.c b/net/netfilter/ipvs/ip_vs_xmit.c
+index 4527921b1c3a..80e7ef272ad1 100644
+--- a/net/netfilter/ipvs/ip_vs_xmit.c
++++ b/net/netfilter/ipvs/ip_vs_xmit.c
+@@ -432,7 +432,7 @@ __ip_vs_route_output_v6(struct net *net, struct in6_addr *daddr,
+ 		return dst;
+ 	if (ipv6_addr_any(&fl6.saddr) &&
+ 	    ipv6_dev_get_saddr(net, ip6_dst_idev(dst)->dev,
+-			       &fl6.daddr, 0, &fl6.saddr) < 0)
++			       &fl6.daddr, 0, /* pvd */ NULL, &fl6.saddr) < 0)
+ 		goto out_err;
+ 	if (do_xfrm) {
+ 		dst = xfrm_lookup(net, dst, flowi6_to_flowi(&fl6), NULL, 0);
+diff --git a/security/selinux/nlmsgtab.c b/security/selinux/nlmsgtab.c
+index 7b7433a1a34c..2f271d24c4df 100644
+--- a/security/selinux/nlmsgtab.c
++++ b/security/selinux/nlmsgtab.c
+@@ -80,6 +80,7 @@ static const struct nlmsg_perm nlmsg_route_perms[] =
+ 	{ RTM_NEWSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ },
+ 	{ RTM_GETSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+ 	{ RTM_NEWCACHEREPORT,	NETLINK_ROUTE_SOCKET__NLMSG_READ },
++	{ RTM_PVDSTATUS,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },	/* PVD extension */
+ };
+ 
+ static const struct nlmsg_perm nlmsg_tcpdiag_perms[] =
+@@ -159,7 +160,8 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
+ 	switch (sclass) {
+ 	case SECCLASS_NETLINK_ROUTE_SOCKET:
+ 		/* RTM_MAX always point to RTM_SETxxxx, ie RTM_NEWxxx + 3 */
+-		BUILD_BUG_ON(RTM_MAX != (RTM_NEWCACHEREPORT + 3));
++		BUILD_BUG_ON(RTM_MAX != (RTM_PVDSTATUS + 3));
++		//BUILD_BUG_ON(RTM_MAX != (RTM_NEWCACHEREPORT + 3));
+ 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_route_perms,
+ 				 sizeof(nlmsg_route_perms));
+ 		break;
