@@ -351,7 +351,7 @@ index ddfbb591e2c5..6e146fbab4c1 100644
  #endif
  
 diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
-index 049008493faf..64ef88281824 100644
+index 049008493faf..d2c5ba1d34d4 100644
 --- a/include/net/net_namespace.h
 +++ b/include/net/net_namespace.h
 @@ -42,11 +42,15 @@ struct ctl_table_header;
@@ -371,7 +371,7 @@ index 049008493faf..64ef88281824 100644
  struct net {
  	refcount_t		passive;	/* To decided when the network
  						 * namespace should be freed.
-@@ -86,6 +90,42 @@ struct net {
+@@ -86,6 +90,43 @@ struct net {
  	int			ifindex;
  	unsigned int		dev_unreg_count;
  
@@ -395,6 +395,7 @@ index 049008493faf..64ef88281824 100644
 +	 * If a slot is not part of the pvd_free_slots[] list,
 +	 * then its pvd_used_slots[] entry points to a pvd
 +	 */
++	/* WQ: why a single linked list of pvds won't suffice? */
 +	unsigned int		pvd_base_seq;	/* protected by rtnl_mutex */
 +	u32			pvdindex;
 +	void			*pvd_used_slots[MAXPVD];/* struct net_pvd *[] */
@@ -416,10 +417,10 @@ index 049008493faf..64ef88281824 100644
  
 diff --git a/include/net/pvd.h b/include/net/pvd.h
 new file mode 100644
-index 000000000000..fda05c9ecc3e
+index 000000000000..0f73eb42f0f0
 --- /dev/null
 +++ b/include/net/pvd.h
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,217 @@
 +
 +#ifndef	_NET_PVD_H
 +#define	_NET_PVD_H
@@ -446,7 +447,7 @@ index 000000000000..fda05c9ecc3e
 + * pvd is an implicit PvD. In this case, the lla and
 + * dev fields uniquely identify the PvD
 + */
-+
++/* WQ: does net_pvd need a lock? */ 
 +struct net_pvd {
 +	struct net_pvd		*next;
 +
@@ -575,7 +576,13 @@ index 000000000000..fda05c9ecc3e
 +extern int pvd_migrate_route(
 +		struct net_pvd *newpvd,
 +		struct rt6_info *rt);
++extern int pvd_migrate_route_rtnl(
++		struct net_pvd *newpvd,
++		struct rt6_info *rt);
 +extern int pvd_migrate_addr(
++		struct net_pvd *newpvd,
++		struct inet6_ifaddr *addr);
++extern int pvd_migrate_addr_rtnl(
 +		struct net_pvd *newpvd,
 +		struct inet6_ifaddr *addr);
 +extern struct net_pvd *register_pvd(
@@ -597,6 +604,8 @@ index 000000000000..fda05c9ecc3e
 +extern int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex);
 +extern struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex);
 +extern int pvd_get_fullindex(struct net_pvd *pvd);
++extern struct net_pvd *pvd_get_by_index(struct net *net, int pvdindex);
++extern int pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex);
 +extern int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd);
 +extern int sock_getbindtopvd(struct sock *sk, char __user *optval,
 +				int __user *optlen, int len);
@@ -619,12 +628,13 @@ index 000000000000..fda05c9ecc3e
 +		int __user *optlen,
 +		int len);
 +
-+extern int sock_getralist(
-+		struct sock *sk,
-+		char __user *optval,
-+		int __user *optlen,
-+		int len);
-+
++/* WQ: following function not implemented
++ * extern int sock_getralist(
++ *		struct sock *sk,
++ *		char __user *optval,
++ *		int __user *optlen,
++ *		int len);
++ */
 +#endif		/* CONFIG_NETPVD */
 +
 +#endif		/* _NET_PVD_H */
@@ -1044,10 +1054,10 @@ index 1fd0a9c88b1b..ab832e23bc77 100644
 \ No newline at end of file
 diff --git a/net/core/pvd.c b/net/core/pvd.c
 new file mode 100644
-index 000000000000..5bd269e3d507
+index 000000000000..36a40782afb2
 --- /dev/null
 +++ b/net/core/pvd.c
-@@ -0,0 +1,2377 @@
+@@ -0,0 +1,2537 @@
 +/*
 + */
 +
@@ -1192,7 +1202,8 @@ index 000000000000..5bd269e3d507
 +	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +	char sAddr[64];
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
++
 +
 +	seq_printf(
 +		seq,
@@ -1205,7 +1216,7 @@ index 000000000000..5bd269e3d507
 +		addr6tostr(pvd->lla.s6_addr, sAddr),
 +		pvd->dev ? pvd->dev->name : "<nodev>");
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return 0;
 +}
@@ -1228,7 +1239,7 @@ index 000000000000..5bd269e3d507
 +	int i;
 +	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < pvd->nroutes; i++) {
 +		struct rt6_info *rt = pvd->routes[i];
@@ -1262,7 +1273,7 @@ index 000000000000..5bd269e3d507
 +			   rt->dst.expires == 0 || lt > 0xffff0000UL ? -1 : lt);
 +	}
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return 0;
 +}
@@ -1285,7 +1296,7 @@ index 000000000000..5bd269e3d507
 +	int i;
 +	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < pvd->naddresses; i++) {
 +		struct inet6_ifaddr *ifa = pvd->addresses[i];
@@ -1299,7 +1310,7 @@ index 000000000000..5bd269e3d507
 +			   ifa);
 +	}
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return 0;
 +}
@@ -1322,7 +1333,7 @@ index 000000000000..5bd269e3d507
 +	int i;
 +	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < pvd->nrdnss; i++) {
 +		char sAddr[64];
@@ -1332,7 +1343,7 @@ index 000000000000..5bd269e3d507
 +			   addr6tostr(pvd->rdnss[i].s6_addr, sAddr));
 +	}
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return 0;
 +}
@@ -1355,13 +1366,13 @@ index 000000000000..5bd269e3d507
 +	int i;
 +	struct net_pvd *pvd = (struct net_pvd *) seq->private;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < pvd->ndnssl; i++) {
 +		seq_printf(seq, "%3d :  %s\n", i, pvd->dnssl[i]);
 +	}
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return 0;
 +}
@@ -1486,8 +1497,9 @@ index 000000000000..5bd269e3d507
 +	struct net_pvd *pvd;
 +	char sAddr[64];
 +
++    /* WQ: why rtnl mutex, read lock shall suffice right? */
 +	rtnl_lock();
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (pvd = net->first_used_pvd; pvd; pvd = pvd->next) {
 +		seq_printf(
@@ -1503,7 +1515,7 @@ index 000000000000..5bd269e3d507
 +			pvd->dev ? pvd->dev->name : "<nodev>");
 +	}
 +
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +	rtnl_unlock();
 +
 +	return 0;
@@ -1696,7 +1708,17 @@ index 000000000000..5bd269e3d507
 + *
 + * We want to ignore routes with the DST_NOCOUNT flag
 + */
-+int	pvd_migrate_route(
++int pvd_migrate_route(struct net_pvd *newpvd, struct rt6_info *rt) {
++	int rc = 0;
++	rtnl_lock();
++	rc = pvd_migrate_route_rtnl(newpvd, rt);
++	rtnl_unlock();
++	return rc;
++}
++EXPORT_SYMBOL(pvd_migrate_route);
++
++/* to be called within rtnl lock */
++int	pvd_migrate_route_rtnl(
 +		struct net_pvd *newpvd,
 +		struct rt6_info *rt)
 +{
@@ -1721,7 +1743,7 @@ index 000000000000..5bd269e3d507
 +		return(0);
 +	}
 +
-+	rcu_read_lock();
++	ASSERT_RTNL();
 +
 +	/*
 +	 * Remove from oldpvd if present
@@ -1729,6 +1751,8 @@ index 000000000000..5bd269e3d507
 +	if (oldpvd == NULL) {
 +		goto Add;
 +	}
++
++	write_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < oldpvd->nroutes; i++) {
 +		if (oldpvd->routes[i] == rt) {
@@ -1758,13 +1782,17 @@ index 000000000000..5bd269e3d507
 +	 * pvd has been received are created => we don't want to
 +	 * migrate them to this pvd
 +	 */
-+	if (rt->dst.dev != newpvd->dev) {
++	/*
++	 * WQ: restrain this dev check to implicit pvds only
++	 * an explicit pvd may come from multiple interfaces
++	 */
++	if (newpvd->implicit_flag && (rt->dst.dev != newpvd->dev)) {
 +		rt->rt6i_pvd = NULL;
 +		goto Exit;
 +	}
 +
 +	for (i = 0; i < newpvd->nroutes && newpvd->routes[i] != rt; i++);
-+
++	
 +	if (i >= newpvd->nroutes) {
 +		/*
 +		 * Not found => create a new entry
@@ -1780,6 +1808,7 @@ index 000000000000..5bd269e3d507
 +	rt->rt6i_pvd = pvd_hold(newpvd);
 +
 +Exit :
++/* WQ: if commented, where do we hold/put the reference for rt in case of add and delete? So we don't? */
 +#if	0
 +	if (deltaCount == -1) {
 +		dst_release(&rt->dst);
@@ -1809,12 +1838,11 @@ index 000000000000..5bd269e3d507
 +		pvd_rtnl_notify(newpvd, PVD_UPDATE);
 +	}
 +
-+	rcu_read_unlock();
++	write_unlock_bh(&pvd_base_lock);
 +
 +	return(rc);
 +}
-+
-+EXPORT_SYMBOL(pvd_migrate_route);
++EXPORT_SYMBOL(pvd_migrate_route_rtnl);
 +
 +/*
 + * pvd_migrate_addr : some addresses are created from prefixes (via RA)
@@ -1835,11 +1863,25 @@ index 000000000000..5bd269e3d507
 + * callers chain => we are using rcu_read_lock()/rcu_read_unlock()
 + * instead
 + */
++/* WQ:
++ * rtnl_lock taken by inet6_addr_modify in addrconf.c
++ * not every call to pvd_migrate_addr has rtnl lock taken
++ */
 +/*
 + * pvd_migrate_addr : migrate an address from its current pvd to a new pvd
 + * Its current pvd might be NULL
 + */
-+int	pvd_migrate_addr(
++int pvd_migrate_addr(struct net_pvd *newpvd, struct inet6_ifaddr *ifa) {
++	int rc = 0;
++	rtnl_lock();
++	rc = pvd_migrate_addr_rtnl(newpvd, ifa);
++	rtnl_unlock();
++	return rc;
++}
++EXPORT_SYMBOL(pvd_migrate_addr);
++
++
++int	pvd_migrate_addr_rtnl(
 +		struct net_pvd *newpvd,
 +		struct inet6_ifaddr *ifa)
 +{
@@ -1863,7 +1905,7 @@ index 000000000000..5bd269e3d507
 +		return(0);
 +	}
 +
-+	rcu_read_lock();
++	ASSERT_RTNL();
 +
 +	/*
 +	 * Remove from oldpvd if present
@@ -1871,6 +1913,8 @@ index 000000000000..5bd269e3d507
 +	if (oldpvd == NULL) {
 +		goto Add;
 +	}
++
++	write_lock_bh(&pvd_base_lock);
 +
 +	for (i = 0; i < oldpvd->naddresses; i++) {
 +		if (oldpvd->addresses[i] == ifa) {
@@ -1932,12 +1976,11 @@ index 000000000000..5bd269e3d507
 +		pvd_rtnl_notify(newpvd, PVD_UPDATE);
 +	}
 +
-+	rcu_read_unlock();
++	write_unlock_bh(&pvd_base_lock);
 +
 +	return(rc);
 +}
-+
-+EXPORT_SYMBOL(pvd_migrate_addr);
++EXPORT_SYMBOL(pvd_migrate_addr_rtnl);
 +
 +/*
 + * pvd_register_rdnss : given a RDNSS option, registers it. This means
@@ -1997,7 +2040,10 @@ index 000000000000..5bd269e3d507
 +	struct nd_opt_rdnss_info *rdnssi = (struct nd_opt_rdnss_info *) rdnss_opt;
 +	int count = rdnssi->nd_opt_rdnssi_len;
 +
-+	rcu_read_lock();
++	/* WQ: pvd_base_lock to to proctect pvd strucutres in corresponding net namespace
++	here we only have to protect the a single pvd, maybe a lock for each pvd? */
++	/* WQ: one single call path from ipv6/ndisc.c; seems no need for rtnl_lock protection? */
++	write_lock_bh(&pvd_base_lock);
 +
 +	switch (count) {
 +		case 7 :
@@ -2020,7 +2066,7 @@ index 000000000000..5bd269e3d507
 +			break;
 +	}
 +
-+	rcu_read_unlock();
++	write_unlock_bh(&pvd_base_lock);
 +}
 +
 +EXPORT_SYMBOL(pvd_register_rdnss);
@@ -2089,7 +2135,8 @@ index 000000000000..5bd269e3d507
 +
 +	suffix[0] = '\0';
 +
-+	rcu_read_lock();
++	/* WQ: same comment as for rdnss */
++	write_lock_bh(&pvd_base_lock);
 +
 +	for (offset = 0; offset < offset_max;) {
 +		int label_len = dnssli->nd_opt_dnssli_suffixes[offset++];
@@ -2127,7 +2174,7 @@ index 000000000000..5bd269e3d507
 +		offset += label_len;
 +	}
 +
-+	rcu_read_unlock();
++	write_unlock_bh(&pvd_base_lock);
 +}
 +
 +EXPORT_SYMBOL(pvd_register_dnssl);
@@ -2173,11 +2220,11 @@ index 000000000000..5bd269e3d507
 +		return 0;
 +	}
 +	if (sk->sk_pvd_bind_type == PVD_BIND_ONEPVD) {
-+		rcu_read_lock();
++		read_lock_bh(&pvd_base_lock);
 +		pvd_hold(*pvd = __pvd_get_by_fullindex(
 +					sock_net(sk),
 +					sk->sk_bound_pvd));
-+		rcu_read_unlock();
++		read_unlock_bh(&pvd_base_lock);
 +		return *pvd == NULL ? -ENETUNREACH : 0;
 +	}
 +
@@ -2185,7 +2232,8 @@ index 000000000000..5bd269e3d507
 +	/*
 +	 * Check at the current thread/process level
 +	 */
-+	rcu_read_lock();
++	/* WQ: why protecting that much code. Should be safe shrink to pvd_get_by_name call */
++	read_lock_bh(&pvd_base_lock);
 +	if (scope == -1 || scope == PVD_BIND_SCOPE_THREAD) {
 +		if (p->bound_pvd == INHERIT_PVD_PTR) {
 +			if (scope == PVD_BIND_SCOPE_THREAD) {
@@ -2213,7 +2261,7 @@ index 000000000000..5bd269e3d507
 +	}
 +
 +process_scope :
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +process_scope_rcu :
 +	/*
@@ -2245,7 +2293,7 @@ index 000000000000..5bd269e3d507
 +	goto rcu_out;
 +
 +rcu_out :
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return ret;
 +}
@@ -2329,7 +2377,8 @@ index 000000000000..5bd269e3d507
 +		}
 +	}
 +
-+	rcu_read_lock();
++	/* WQ: should be safe shrink the protection to pvd_get_by_name call */
++	read_lock_bh(&pvd_base_lock);
 +
 +	ret = 0;
 +
@@ -2397,10 +2446,11 @@ index 000000000000..5bd269e3d507
 +	release_sock(sk);
 +
 +rcu_out :
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return ret;
 +}
++EXPORT_SYMBOL(sock_setbindtopvd);
 +
 +/*
 + * sock_getbindtopvd : return the currently bound pvd for the
@@ -2454,6 +2504,7 @@ index 000000000000..5bd269e3d507
 +
 +	return 0;
 +}
++EXPORT_SYMBOL(sock_getbindtopvd);
 +
 +/*
 + * _sock_getpvdattr : fill in a user net_pvd_attribute structure
@@ -2639,6 +2690,10 @@ index 000000000000..5bd269e3d507
 +			goto out;
 +		}
 +
++		/* 
++		 * WQ: list add rcu for __register_pvd instead ? 
++		 * in __register_pvd, add_pvd_in_net is call, where write lock is applied
++		 */
 +		if ((pvd = __register_pvd(net, cpvd.pvdname, NULL, NULL)) == NULL) {
 +			ret = -ENOMEM;
 +			goto out;
@@ -2646,12 +2701,16 @@ index 000000000000..5bd269e3d507
 +		pvdJustCreated = true;
 +	}
 +
++	/* 
++	 * WQ: list del rcu for unregister pvd
++	 * in __unregister_pvd, remove_from_net is called, where write lock is applied 
++	 * */
 +	if ((cpvd.flag & PVD_ATTR_DEPRECATED) != 0 && cpvd.deprecated == 1) {
 +		__unregister_pvd(pvd);
 +		goto out;
 +	}
 +
-+	rcu_read_lock();
++	write_lock_bh(&pvd_base_lock);
 +
 +	if ((cpvd.flag & PVD_ATTR_SEQNUMBER) != 0) {
 +		pvd->sequence_number = cpvd.sequence_number;
@@ -2665,7 +2724,7 @@ index 000000000000..5bd269e3d507
 +		pvd->l_flag = cpvd.l_flag;
 +	}
 +
-+	rcu_read_unlock();
++	write_unlock_bh(&pvd_base_lock);
 +
 +	if (cpvd.flag != 0 || pvdJustCreated) {
 +		pvd_rtnl_notify(pvd, pvdJustCreated ? PVD_NEW : PVD_UPDATE);
@@ -2675,6 +2734,8 @@ index 000000000000..5bd269e3d507
 +
 +	return ret;
 +}
++
++EXPORT_SYMBOL(sock_createpvd);
 +
 +/*
 + * sock_getpvdattr : return the attributes for a given PvD
@@ -2712,7 +2773,9 @@ index 000000000000..5bd269e3d507
 +		return -EINVAL;	/* empty name */
 +	}
 +
-+	rtnl_lock();
++	/* WQ: read lock should suffice, see no need for rtnl_lock */
++	// rtnl_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (pvd = net->first_used_pvd;
 +	     pvd != NULL && strcmp(pvd->name, pvdname) != 0;
@@ -2720,10 +2783,13 @@ index 000000000000..5bd269e3d507
 +
 +	ret = pvd ? _sock_getpvdattr(pvd, pva.pvdattr) : -ENOENT;
 +
-+	rtnl_unlock();
++	// rtnl_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return ret;
 +}
++
++EXPORT_SYMBOL(sock_getpvdattr);
 +
 +/*
 + * sock_getpvdlist : return the full list of currently registered
@@ -2760,7 +2826,9 @@ index 000000000000..5bd269e3d507
 +		return ret;
 +	}
 +
-+	rtnl_lock();
++	/* WQ: why mutex, a read lock shall suffice  */
++	//rtnl_lock();
++	read_lock_bh(&pvd_base_lock);
 +
 +	for (npvds = 0, pvd = net->first_used_pvd;
 +	     pvd != NULL && npvds < unpvds && npvds < MAXPVD;
@@ -2779,10 +2847,13 @@ index 000000000000..5bd269e3d507
 +	ret = 0;
 +
 +out :
-+	rtnl_unlock();
++	// rtnl_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +
 +	return ret;
 +}
++
++EXPORT_SYMBOL(sock_getpvdlist);
 +
 +/*
 + * Add a PvD in the per net/array. rtnl must be taken
@@ -2797,6 +2868,7 @@ index 000000000000..5bd269e3d507
 +
 +	ASSERT_RTNL();
 +
++	/* WQ: mixed use of RWLOCK and rcu, rcu for linked list, RWLOCK or seqlock for arrarys */
 +	write_lock_bh(&pvd_base_lock);
 +
 +	if (net->first_used_pvd != NULL) {
@@ -2870,11 +2942,13 @@ index 000000000000..5bd269e3d507
 + *
 + * 	The rntl semaphore mut be taken
 + */
++/* WQ: why rntl_lock, there is not update happening here */
 +
 +int pvd_get_fullindex(struct net_pvd *pvd)
 +{
 +	return pvd->_index | (pvd->pvdindex << MAXPVDSHIFT);
 +}
++EXPORT_SYMBOL(pvd_get_fullindex);
 +
 +/**
 + *	__pvd_get_by_name	- find a pvd by its name
@@ -2889,7 +2963,7 @@ index 000000000000..5bd269e3d507
 + *	reference counters are not incremented so the caller must be
 + *	careful with locks.
 + */
-+
++/* WQ: again see no reason for rtnl_lock, as only read is involved */
 +struct net_pvd *__pvd_get_by_name(
 +			struct net *net,
 +			const char *name,
@@ -2971,7 +3045,7 @@ index 000000000000..5bd269e3d507
 + *	release it when it is no longer needed. %NULL is returned if no
 + *	matching pvd is found.
 + */
-+
++/* WQ: meaningless to hold rcu here, as net pvd structures are protected by RWLOCK... */
 +struct net_pvd *pvd_get_by_name(
 +			struct net *net,
 +			const char *name,
@@ -2980,11 +3054,11 @@ index 000000000000..5bd269e3d507
 +{
 +	struct net_pvd *pvd;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +	pvd = pvd_get_by_name_rcu(net, name, dev, lla);
 +	if (pvd)
 +		pvd_hold(pvd);
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +	return pvd;
 +}
 +EXPORT_SYMBOL(pvd_get_by_name);
@@ -3079,11 +3153,11 @@ index 000000000000..5bd269e3d507
 +{
 +	struct net_pvd *pvd;
 +
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +	pvd = pvd_get_by_index_rcu(net, pvdindex);
 +	if (pvd)
 +		pvd_hold(pvd);
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +	return pvd;
 +}
 +EXPORT_SYMBOL(pvd_get_by_index);
@@ -3105,15 +3179,15 @@ index 000000000000..5bd269e3d507
 +
 +retry:
 +	seq = raw_seqcount_begin(&pvd_rename_seq);
-+	rcu_read_lock();
++	read_lock_bh(&pvd_base_lock);
 +	pvd = pvd_get_by_index_rcu(net, pvdindex);
 +	if (!pvd) {
-+		rcu_read_unlock();
++		read_unlock_bh(&pvd_base_lock);
 +		return -ENODEV;
 +	}
 +
 +	strcpy(pvdname, pvd->name);
-+	rcu_read_unlock();
++	read_unlock_bh(&pvd_base_lock);
 +	if (read_seqcount_retry(&pvd_rename_seq, seq)) {
 +		cond_resched();
 +		goto retry;
@@ -3121,6 +3195,7 @@ index 000000000000..5bd269e3d507
 +
 +	return 0;
 +}
++EXPORT_SYMBOL(netpvd_get_name);
 +
 +/**
 + *	pvd_new_index	-	allocate a pvdindex
@@ -3130,9 +3205,12 @@ index 000000000000..5bd269e3d507
 + *	number.  The caller must hold the rtnl semaphore or the
 + *	pvd_base_lock to be sure it remains unique.
 + */
++/* WQ: better assert RTNL right? */
 +static u32 pvd_new_index(struct net *net)
 +{
 +	u32	pvdindex = net->pvdindex;
++
++	ASSERT_RTNL();
 +
 +	if (pvdindex >= MAXPVDINDEX) {
 +		pvdindex = 0;
@@ -3164,6 +3242,8 @@ index 000000000000..5bd269e3d507
 +{
 +	struct net_pvd *pvd;
 +	int FlagImplicit = false;
++
++	ASSERT_RTNL();
 +
 +	if (pvdname == NULL && (dev == NULL || lla == NULL)) {
 +		return(NULL);
@@ -3210,13 +3290,17 @@ index 000000000000..5bd269e3d507
 +	pvd->pvdindex = pvd_new_index(net);
 +	pvd->_index = -1;	/* index in the net->pvds array */
 +	pvd_net_set(pvd, net);
-+	pvd->dev = dev;
++	/* 
++	 * only remember dev for implicit pvd
++	 * explicit ones may come from multiple devs
++	 */
++	if (FlagImplicit) {
++		pvd->dev = dev;
++		dev_hold(dev);  // dev can't be NULL if implicit flag set
++	}
 +	pvd->implicit_flag = FlagImplicit;
 +	if (lla != NULL) {
 +		memcpy(&pvd->lla, lla, sizeof(*lla));
-+	}
-+	if (dev != NULL) {
-+		dev_hold(dev);
 +	}
 +
 +	pvd->pcpu_refcnt = alloc_percpu(int);
@@ -3257,7 +3341,6 @@ index 000000000000..5bd269e3d507
 +}
 +
 +EXPORT_SYMBOL(register_pvd);
-+EXPORT_SYMBOL(unregister_pvd);
 +
 +/*
 + * TODO : provide and implement a unregister_pvd function
@@ -3270,17 +3353,24 @@ index 000000000000..5bd269e3d507
 +
 +	printk("unregister_pvd(%s) called\n", pvd ? pvd->name : "<no pvd>");
 +
++	ASSERT_RTNL();
++
 +	if (pvd) {
 +#ifdef CONFIG_PROC_FS
 +		unregister_proc_pvd(pvd_net(pvd), pvd);
 +#endif
-+		rcu_read_lock();
++		write_lock_bh(&pvd_base_lock);
 +
 +		pvd_rtnl_notify(pvd, PVD_DEL);
 +
 +		if (pvd->pcpu_refcnt) {
 +			free_percpu(pvd->pcpu_refcnt);
 +		}
++
++		/* tentatively try to dev_put*/
++		if(pvd->dev)
++			dev_put(pvd->dev);
++
 +		/*
 +		 * Deassociate the pvd from its addresses and routes
 +		 */
@@ -3307,7 +3397,7 @@ index 000000000000..5bd269e3d507
 +		 * TODO : Deassociate from the bound sockets
 +		 */
 +
-+		rcu_read_unlock();
++		write_unlock_bh(&pvd_base_lock);
 +
 +		/*
 +		 * Remove it from the net structure
@@ -3335,7 +3425,7 @@ index 000000000000..5bd269e3d507
 +	for (pvd = net->first_used_pvd; pvd; pvd = pvdnext) {
 +		pvdnext = pvd->next;
 +
-+		rcu_read_lock();
++		write_lock_bh(&pvd_base_lock);
 +
 +		FlagUpdate = false;
 +
@@ -3373,7 +3463,7 @@ index 000000000000..5bd269e3d507
 +		if (FlagUpdate) {
 +			pvd_rtnl_notify(pvd, PVD_UPDATE);
 +		}
-+		rcu_read_unlock();
++		write_unlock_bh(&pvd_base_lock);
 +	}
 +
 +	/*
@@ -3392,6 +3482,82 @@ index 000000000000..5bd269e3d507
 +	__unregister_pvd(pvd);
 +	rtnl_unlock();
 +}
++EXPORT_SYMBOL(unregister_pvd);
++
++
++int __pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex){
++	struct net_pvd *pvd;
++	int i;
++
++	for (pvd = dev_net(dev)->first_used_pvd, i=0; 
++	     pvd != NULL && i < MAXPVDINDEX; 
++		 pvd = pvd->next, i++) {
++		if(pvd->dev == dev)
++			pvdindex[i] = pvd->pvdindex;
++	}
++	/* return 0 if found at least one PvD received via that device, else -ENODEV */
++	if (pvdindex[0]) {  // valid pvd->pvdindex is non-zero
++		return 0;
++	} else {
++		return -ENODEV;
++	}
++}
++EXPORT_SYMBOL(__pvdindex_get_by_dev);
++
++int pvdindex_get_by_dev_rcu(struct net_device *dev, u32 *pvdindex) {
++	return __pvdindex_get_by_dev(dev, pvdindex);
++}
++EXPORT_SYMBOL(pvdindex_get_by_dev_rcu);
++
++int pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex) {
++	int ret;
++	read_lock(&pvd_base_lock);
++	ret = pvdindex_get_by_dev_rcu(dev, pvdindex);
++	read_unlock(&pvd_base_lock);
++	return ret;
++}
++EXPORT_SYMBOL(pvdindex_get_by_dev);
++
++static int pvd_netdev_event(struct notifier_block *this, unsigned long event, void *ptr)
++{
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++	struct net *net = dev_net(dev);
++	struct net_pvd *pvd;
++	u32 pvdindex[MAXPVDINDEX] = {0};
++	u32 pidx;
++	int i;
++
++	switch (event) {
++		case NETDEV_UNREGISTER:
++		case NETDEV_UNREGISTER_FINAL:
++			if (pvdindex_get_by_dev(dev, pvdindex)==0) {
++				for(i = 0; i < MAXPVDINDEX; i++){
++					pidx = pvdindex[i];
++					if (pidx) {
++						pvd = pvd_get_by_index(net, pidx);
++						if (pvd != NULL) {
++							dev_put(pvd->dev);
++							pvd->dev = NULL;
++							pvd_put(pvd);
++							// unregister_pvd(pvd);
++						}
++					}
++					else {  // won't be any valid pvdindex afterward
++						break;
++					}
++				}
++			}
++			break;
++		default:
++			break;
++	}
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block pvd_netdev_notifier = {
++	.notifier_call = pvd_netdev_event,
++	.priority = 0,  /* FIXME: not sure of the value */
++};
 +
 +/*
 + *	Initialize the PVD module
@@ -3413,6 +3579,10 @@ index 000000000000..5bd269e3d507
 +	if (register_pernet_subsys(&netpvd_proc_ops))
 +		goto out;
 +#endif
++
++	/* the following netdevice event handler causes kernel panic */
++	// if (register_netdevice_notifier(&pvd_netdev_notifier))
++	//	goto out;
 +
 +	pvd_boot_phase = 0;
 +
@@ -3513,7 +3683,7 @@ index 93066bd0305a..c53dd523c078 100644
 +EXPORT_SYMBOL(addr6tostr);
 \ No newline at end of file
 diff --git a/net/ipv6/addrconf.c b/net/ipv6/addrconf.c
-index 2547222589fe..410a112180b1 100644
+index 2547222589fe..2036096e612e 100644
 --- a/net/ipv6/addrconf.c
 +++ b/net/ipv6/addrconf.c
 @@ -82,6 +82,11 @@
@@ -3548,19 +3718,23 @@ index 2547222589fe..410a112180b1 100644
  };
  
  /* Check if link is ready: is it up and is a valid qdisc available */
-@@ -929,6 +940,11 @@ void inet6_ifa_finish_destroy(struct inet6_ifaddr *ifp)
+@@ -929,6 +940,15 @@ void inet6_ifa_finish_destroy(struct inet6_ifaddr *ifp)
  	}
  	ip6_rt_put(ifp->rt);
  
 +#ifdef	CONFIG_NETPVD
-+	printk("inet6_ifa_finish_destroy called\n");
-+	pvd_migrate_addr(NULL, ifp);
++	if (rtnl_is_locked()) {
++		pvd_migrate_addr_rtnl(NULL, ifp); 
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_addr()\n", __func__);
++		pvd_migrate_addr(NULL, ifp);
++	}
 +#endif
 +
  	kfree_rcu(ifp, rcu);
  }
  
-@@ -1001,7 +1017,8 @@ static struct inet6_ifaddr *
+@@ -1001,7 +1021,8 @@ static struct inet6_ifaddr *
  ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  	      const struct in6_addr *peer_addr, int pfxlen,
  	      int scope, u32 flags, u32 valid_lft, u32 prefered_lft,
@@ -3570,7 +3744,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	gfp_t gfp_flags = can_block ? GFP_KERNEL : GFP_ATOMIC;
  	struct net *net = dev_net(idev->dev);
-@@ -1010,6 +1027,16 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+@@ -1010,6 +1031,16 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  	int err = 0;
  	int addr_type = ipv6_addr_type(addr);
  
@@ -3587,7 +3761,7 @@ index 2547222589fe..410a112180b1 100644
  	if (addr_type == IPV6_ADDR_ANY ||
  	    addr_type & IPV6_ADDR_MULTICAST ||
  	    (!(idev->dev->flags & IFF_LOOPBACK) &&
-@@ -1049,7 +1076,7 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+@@ -1049,7 +1080,7 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  		goto out;
  	}
  
@@ -3596,18 +3770,23 @@ index 2547222589fe..410a112180b1 100644
  	if (IS_ERR(rt)) {
  		err = PTR_ERR(rt);
  		rt = NULL;
-@@ -1080,6 +1107,10 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
+@@ -1080,6 +1111,15 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
  	ifa->cstamp = ifa->tstamp = jiffies;
  	ifa->tokenized = false;
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_addr(pvd, ifa);
++	if (rtnl_is_locked()) {
++		pvd_migrate_addr_rtnl(pvd, ifa);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_addr()/n", __func__);
++		pvd_migrate_addr(pvd, ifa);
++	}
 +#endif
 +
  	ifa->rt = rt;
  
  	ifa->idev = idev;
-@@ -1373,7 +1404,7 @@ static int ipv6_create_tempaddr(struct inet6_ifaddr *ifp,
+@@ -1373,7 +1413,7 @@ static int ipv6_create_tempaddr(struct inet6_ifaddr *ifp,
  
  	ift = ipv6_add_addr(idev, &addr, NULL, tmp_plen,
  			    ipv6_addr_scope(&addr), addr_flags,
@@ -3616,7 +3795,7 @@ index 2547222589fe..410a112180b1 100644
  	if (IS_ERR(ift)) {
  		in6_ifa_put(ifp);
  		in6_dev_put(idev);
-@@ -1432,6 +1463,7 @@ struct ipv6_saddr_dst {
+@@ -1432,6 +1472,7 @@ struct ipv6_saddr_dst {
  	int ifindex;
  	int scope;
  	int label;
@@ -3624,7 +3803,7 @@ index 2547222589fe..410a112180b1 100644
  	unsigned int prefs;
  };
  
-@@ -1539,7 +1571,13 @@ static int ipv6_get_saddr_eval(struct net *net,
+@@ -1539,7 +1580,13 @@ static int ipv6_get_saddr_eval(struct net *net,
  	    }
  #endif
  	case IPV6_SADDR_RULE_OIF:
@@ -3639,7 +3818,7 @@ index 2547222589fe..410a112180b1 100644
  		ret = (!dst->ifindex ||
  		       dst->ifindex == score->ifa->idev->dev->ifindex);
  		break;
-@@ -1689,6 +1727,7 @@ static int ipv6_get_saddr_master(struct net *net,
+@@ -1689,6 +1736,7 @@ static int ipv6_get_saddr_master(struct net *net,
  
  int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
  		       const struct in6_addr *daddr, unsigned int prefs,
@@ -3647,7 +3826,7 @@ index 2547222589fe..410a112180b1 100644
  		       struct in6_addr *saddr)
  {
  	struct ipv6_saddr_score scores[2], *hiscore;
-@@ -1702,6 +1741,7 @@ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
+@@ -1702,6 +1750,7 @@ int ipv6_dev_get_saddr(struct net *net, const struct net_device *dst_dev,
  
  	dst_type = __ipv6_addr_type(daddr);
  	dst.addr = daddr;
@@ -3655,7 +3834,7 @@ index 2547222589fe..410a112180b1 100644
  	dst.ifindex = dst_dev ? dst_dev->ifindex : 0;
  	dst.scope = __ipv6_addr_src_scope(dst_type);
  	dst.label = ipv6_addr_label(net, daddr, dst_type, dst.ifindex);
-@@ -2041,7 +2081,7 @@ void addrconf_dad_failure(struct sk_buff *skb, struct inet6_ifaddr *ifp)
+@@ -2041,7 +2090,7 @@ void addrconf_dad_failure(struct sk_buff *skb, struct inet6_ifaddr *ifp)
  
  		ifp2 = ipv6_add_addr(idev, &new_addr, NULL, pfxlen,
  				     scope, flags, valid_lft,
@@ -3664,7 +3843,7 @@ index 2547222589fe..410a112180b1 100644
  		if (IS_ERR(ifp2))
  			goto lock_errdad;
  
-@@ -2295,7 +2335,8 @@ static void  ipv6_try_regen_rndid(struct inet6_dev *idev, struct in6_addr *tmpad
+@@ -2295,7 +2344,8 @@ static void  ipv6_try_regen_rndid(struct inet6_dev *idev, struct in6_addr *tmpad
  
  static void
  addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
@@ -3674,7 +3853,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_PREFIX,
-@@ -2309,6 +2350,9 @@ addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
+@@ -2309,6 +2359,9 @@ addrconf_prefix_route(struct in6_addr *pfx, int plen, struct net_device *dev,
  	};
  
  	cfg.fc_dst = *pfx;
@@ -3684,7 +3863,7 @@ index 2547222589fe..410a112180b1 100644
  
  	/* Prevent useless cloning on PtP SIT.
  	   This thing is done here expecting that the whole
-@@ -2361,7 +2405,7 @@ static struct rt6_info *addrconf_get_prefix_route(const struct in6_addr *pfx,
+@@ -2361,7 +2414,7 @@ static struct rt6_info *addrconf_get_prefix_route(const struct in6_addr *pfx,
  
  /* Create "default" multicast route to the interface */
  
@@ -3693,7 +3872,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct fib6_config cfg = {
  		.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_LOCAL,
-@@ -2373,11 +2417,14 @@ static void addrconf_add_mroute(struct net_device *dev)
+@@ -2373,11 +2426,14 @@ static void addrconf_add_mroute(struct net_device *dev)
  	};
  
  	ipv6_addr_set(&cfg.fc_dst, htonl(0xFF000000), 0, 0, 0);
@@ -3709,7 +3888,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct inet6_dev *idev;
  
-@@ -2392,7 +2439,7 @@ static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
+@@ -2392,7 +2448,7 @@ static struct inet6_dev *addrconf_add_dev(struct net_device *dev)
  
  	/* Add default multicast route */
  	if (!(dev->flags & IFF_LOOPBACK) && !netif_is_l3_master(dev))
@@ -3718,7 +3897,7 @@ index 2547222589fe..410a112180b1 100644
  
  	return idev;
  }
-@@ -2475,7 +2522,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+@@ -2475,7 +2531,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
  				 struct inet6_dev *in6_dev,
  				 const struct in6_addr *addr, int addr_type,
  				 u32 addr_flags, bool sllao, bool tokenized,
@@ -3728,7 +3907,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct inet6_ifaddr *ifp = ipv6_get_ifaddr(net, addr, dev, 1);
  	int create = 0, update_lft = 0;
-@@ -2499,7 +2547,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+@@ -2499,7 +2556,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
  					    pinfo->prefix_len,
  					    addr_type&IPV6_ADDR_SCOPE_MASK,
  					    addr_flags, valid_lft,
@@ -3738,18 +3917,23 @@ index 2547222589fe..410a112180b1 100644
  
  		if (IS_ERR_OR_NULL(ifp))
  			return -1;
-@@ -2519,6 +2568,10 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+@@ -2519,6 +2577,15 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
  		unsigned long now;
  		u32 stored_lft;
  
 +#ifdef	CONFIG_NETPVD
-+		pvd_migrate_addr(pvd, ifp);
++		if (rtnl_is_locked()) {
++			pvd_migrate_addr_rtnl(pvd, ifp);
++		} else {
++			printk("%s rtnl not locked, called pvd_migrate_addr()\n", __func__);
++			pvd_migrate_addr(pvd, ifp);
++		}
 +#endif
 +
  		/* update lifetime (RFC2462 5.5.3 e) */
  		spin_lock_bh(&ifp->lock);
  		now = jiffies;
-@@ -2568,7 +2621,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
+@@ -2568,7 +2635,8 @@ int addrconf_prefix_rcv_add_addr(struct net *net, struct net_device *dev,
  }
  EXPORT_SYMBOL_GPL(addrconf_prefix_rcv_add_addr);
  
@@ -3759,7 +3943,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct prefix_info *pinfo;
  	__u32 valid_lft;
-@@ -2580,6 +2634,16 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2580,6 +2648,16 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  
  	pinfo = (struct prefix_info *) opt;
  
@@ -3776,18 +3960,23 @@ index 2547222589fe..410a112180b1 100644
  	if (len < sizeof(struct prefix_info)) {
  		ADBG("addrconf: prefix option too short\n");
  		return;
-@@ -2650,6 +2714,10 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2650,6 +2728,15 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  			} else {
  				rt6_clean_expires(rt);
  			}
 +#ifdef	CONFIG_NETPVD
 +			printk("%s calls pvd_migrate_route()\n", __func__);
++			if(rtnl_is_locked()) {
++			pvd_migrate_route_rtnl(pvd, rt);
++		} else {
++			printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
 +			pvd_migrate_route(pvd, rt);
++		}
 +#endif
  		} else if (valid_lft) {
  			clock_t expires = 0;
  			int flags = RTF_ADDRCONF | RTF_PREFIX_RT;
-@@ -2659,7 +2727,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2659,7 +2746,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  				expires = jiffies_to_clock_t(rt_expires);
  			}
  			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
@@ -3796,7 +3985,7 @@ index 2547222589fe..410a112180b1 100644
  		}
  		ip6_rt_put(rt);
  	}
-@@ -2701,7 +2769,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2701,7 +2788,7 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  						   &addr, addr_type,
  						   addr_flags, sllao,
  						   tokenized, valid_lft,
@@ -3805,7 +3994,7 @@ index 2547222589fe..410a112180b1 100644
  		if (err)
  			goto put;
  
-@@ -2712,9 +2780,20 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
+@@ -2712,9 +2799,20 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
  					      addr_type, addr_flags, sllao,
  					      tokenized, valid_lft,
  					      prefered_lft,
@@ -3827,7 +4016,7 @@ index 2547222589fe..410a112180b1 100644
  put:
  	in6_dev_put(in6_dev);
  }
-@@ -2810,7 +2889,8 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2810,7 +2908,8 @@ static int inet6_addr_add(struct net *net, int ifindex,
  			  const struct in6_addr *peer_pfx,
  			  unsigned int plen, __u32 ifa_flags,
  			  __u32 prefered_lft, __u32 valid_lft,
@@ -3837,7 +4026,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct inet6_ifaddr *ifp;
  	struct inet6_dev *idev;
-@@ -2836,7 +2916,7 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2836,7 +2935,7 @@ static int inet6_addr_add(struct net *net, int ifindex,
  	if (!dev)
  		return -ENODEV;
  
@@ -3846,7 +4035,7 @@ index 2547222589fe..410a112180b1 100644
  	if (IS_ERR(idev))
  		return PTR_ERR(idev);
  
-@@ -2869,12 +2949,12 @@ static int inet6_addr_add(struct net *net, int ifindex,
+@@ -2869,12 +2968,12 @@ static int inet6_addr_add(struct net *net, int ifindex,
  	}
  
  	ifp = ipv6_add_addr(idev, pfx, peer_pfx, plen, scope, ifa_flags,
@@ -3861,7 +4050,7 @@ index 2547222589fe..410a112180b1 100644
  		}
  
  		/*
-@@ -2954,7 +3034,8 @@ int addrconf_add_ifaddr(struct net *net, void __user *arg)
+@@ -2954,7 +3053,8 @@ int addrconf_add_ifaddr(struct net *net, void __user *arg)
  	rtnl_lock();
  	err = inet6_addr_add(net, ireq.ifr6_ifindex, &ireq.ifr6_addr, NULL,
  			     ireq.ifr6_prefixlen, IFA_F_PERMANENT,
@@ -3871,7 +4060,7 @@ index 2547222589fe..410a112180b1 100644
  	rtnl_unlock();
  	return err;
  }
-@@ -2978,14 +3059,14 @@ int addrconf_del_ifaddr(struct net *net, void __user *arg)
+@@ -2978,14 +3078,14 @@ int addrconf_del_ifaddr(struct net *net, void __user *arg)
  }
  
  static void add_addr(struct inet6_dev *idev, const struct in6_addr *addr,
@@ -3888,7 +4077,7 @@ index 2547222589fe..410a112180b1 100644
  	if (!IS_ERR(ifp)) {
  		spin_lock_bh(&ifp->lock);
  		ifp->flags &= ~IFA_F_TENTATIVE;
-@@ -3021,8 +3102,8 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+@@ -3021,8 +3121,8 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
  	}
  
  	if (addr.s6_addr32[3]) {
@@ -3899,7 +4088,7 @@ index 2547222589fe..410a112180b1 100644
  		return;
  	}
  
-@@ -3045,9 +3126,9 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
+@@ -3045,9 +3145,9 @@ static void sit_add_v4_addrs(struct inet6_dev *idev)
  					flag |= IFA_HOST;
  				}
  
@@ -3911,7 +4100,7 @@ index 2547222589fe..410a112180b1 100644
  			}
  		}
  	}
-@@ -3068,11 +3149,12 @@ static void init_loopback(struct net_device *dev)
+@@ -3068,11 +3168,12 @@ static void init_loopback(struct net_device *dev)
  		return;
  	}
  
@@ -3926,7 +4115,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct inet6_ifaddr *ifp;
  	u32 addr_flags = flags | IFA_F_PERMANENT;
-@@ -3085,9 +3167,9 @@ void addrconf_add_linklocal(struct inet6_dev *idev,
+@@ -3085,9 +3186,9 @@ void addrconf_add_linklocal(struct inet6_dev *idev,
  #endif
  
  	ifp = ipv6_add_addr(idev, addr, NULL, 64, IFA_LINK, addr_flags,
@@ -3938,7 +4127,7 @@ index 2547222589fe..410a112180b1 100644
  		addrconf_dad_start(ifp);
  		in6_ifa_put(ifp);
  	}
-@@ -3183,7 +3265,8 @@ static void ipv6_gen_mode_random_init(struct inet6_dev *idev)
+@@ -3183,7 +3284,8 @@ static void ipv6_gen_mode_random_init(struct inet6_dev *idev)
  	s->initialized = true;
  }
  
@@ -3948,7 +4137,7 @@ index 2547222589fe..410a112180b1 100644
  {
  	struct in6_addr addr;
  
-@@ -3200,9 +3283,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+@@ -3200,9 +3302,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
  	case IN6_ADDR_GEN_MODE_STABLE_PRIVACY:
  		if (!ipv6_generate_stable_address(&addr, 0, idev))
  			addrconf_add_linklocal(idev, &addr,
@@ -3960,7 +4149,7 @@ index 2547222589fe..410a112180b1 100644
  		break;
  	case IN6_ADDR_GEN_MODE_EUI64:
  		/* addrconf_add_linklocal also adds a prefix_route and we
-@@ -3210,9 +3293,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
+@@ -3210,9 +3312,9 @@ static void addrconf_addr_gen(struct inet6_dev *idev, bool prefix_route)
  		 * couldn't generate one.
  		 */
  		if (ipv6_generate_eui64(addr.s6_addr + 8, idev->dev) == 0)
@@ -3972,7 +4161,7 @@ index 2547222589fe..410a112180b1 100644
  		break;
  	case IN6_ADDR_GEN_MODE_NONE:
  	default:
-@@ -3242,7 +3325,7 @@ static void addrconf_dev_config(struct net_device *dev)
+@@ -3242,7 +3344,7 @@ static void addrconf_dev_config(struct net_device *dev)
  		return;
  	}
  
@@ -3981,7 +4170,7 @@ index 2547222589fe..410a112180b1 100644
  	if (IS_ERR(idev))
  		return;
  
-@@ -3251,7 +3334,7 @@ static void addrconf_dev_config(struct net_device *dev)
+@@ -3251,7 +3353,7 @@ static void addrconf_dev_config(struct net_device *dev)
  	    idev->cnf.addr_gen_mode == IN6_ADDR_GEN_MODE_EUI64)
  		idev->cnf.addr_gen_mode = IN6_ADDR_GEN_MODE_RANDOM;
  
@@ -3990,7 +4179,7 @@ index 2547222589fe..410a112180b1 100644
  }
  
  #if IS_ENABLED(CONFIG_IPV6_SIT)
-@@ -3274,14 +3357,14 @@ static void addrconf_sit_config(struct net_device *dev)
+@@ -3274,14 +3376,14 @@ static void addrconf_sit_config(struct net_device *dev)
  	}
  
  	if (dev->priv_flags & IFF_ISATAP) {
@@ -4007,7 +4196,7 @@ index 2547222589fe..410a112180b1 100644
  }
  #endif
  
-@@ -3298,9 +3381,9 @@ static void addrconf_gre_config(struct net_device *dev)
+@@ -3298,9 +3400,9 @@ static void addrconf_gre_config(struct net_device *dev)
  		return;
  	}
  
@@ -4019,7 +4208,7 @@ index 2547222589fe..410a112180b1 100644
  }
  #endif
  
-@@ -3314,7 +3397,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+@@ -3314,7 +3416,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
  	if (!ifp->rt || !ifp->rt->rt6i_node) {
  		struct rt6_info *rt, *prev;
  
@@ -4028,7 +4217,7 @@ index 2547222589fe..410a112180b1 100644
  		if (IS_ERR(rt))
  			return PTR_ERR(rt);
  
-@@ -3329,7 +3412,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
+@@ -3329,7 +3431,7 @@ static int fixup_permanent_addr(struct inet6_dev *idev,
  
  	if (!(ifp->flags & IFA_F_NOPREFIXROUTE)) {
  		addrconf_prefix_route(&ifp->addr, ifp->prefix_len,
@@ -4037,7 +4226,7 @@ index 2547222589fe..410a112180b1 100644
  	}
  
  	if (ifp->state == INET6_IFADDR_STATE_PREDAD)
-@@ -4207,13 +4290,24 @@ static void if6_seq_stop(struct seq_file *seq, void *v)
+@@ -4207,13 +4309,24 @@ static void if6_seq_stop(struct seq_file *seq, void *v)
  static int if6_seq_show(struct seq_file *seq, void *v)
  {
  	struct inet6_ifaddr *ifp = (struct inet6_ifaddr *)v;
@@ -4064,7 +4253,7 @@ index 2547222589fe..410a112180b1 100644
  	return 0;
  }
  
-@@ -4479,7 +4573,7 @@ inet6_rtm_deladdr(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -4479,7 +4592,7 @@ inet6_rtm_deladdr(struct sk_buff *skb, struct nlmsghdr *nlh,
  }
  
  static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
@@ -4073,12 +4262,17 @@ index 2547222589fe..410a112180b1 100644
  {
  	u32 flags;
  	clock_t expires;
-@@ -4526,13 +4620,17 @@ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
+@@ -4526,13 +4639,22 @@ static int inet6_addr_modify(struct inet6_ifaddr *ifp, u32 ifa_flags,
  	ifp->valid_lft = valid_lft;
  	ifp->prefered_lft = prefered_lft;
  
 +#ifdef	CONFIG_NETPVD
-+	pvd_migrate_addr(pvd, ifp);
++	if (rtnl_is_locked()) {
++		pvd_migrate_addr_rtnl(pvd, ifp);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_addr()\n", __func__);
++		pvd_migrate_addr(pvd, ifp);
++	}
 +#endif
 +
  	spin_unlock_bh(&ifp->lock);
@@ -4092,7 +4286,7 @@ index 2547222589fe..410a112180b1 100644
  	} else if (had_prefixroute) {
  		enum cleanup_prefix_rt_t action;
  		unsigned long rt_expires;
-@@ -4572,6 +4670,8 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -4572,6 +4694,8 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
  	u32 valid_lft = INFINITY_LIFE_TIME, preferred_lft = INFINITY_LIFE_TIME;
  	u32 ifa_flags;
  	int err;
@@ -4101,7 +4295,7 @@ index 2547222589fe..410a112180b1 100644
  
  	err = nlmsg_parse(nlh, sizeof(*ifm), tb, IFA_MAX, ifa_ipv6_policy,
  			  extack);
-@@ -4594,6 +4694,22 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -4594,6 +4718,22 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
  		valid_lft = INFINITY_LIFE_TIME;
  	}
  
@@ -4124,7 +4318,7 @@ index 2547222589fe..410a112180b1 100644
  	dev =  __dev_get_by_index(net, ifm->ifa_index);
  	if (!dev)
  		return -ENODEV;
-@@ -4612,14 +4728,14 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -4612,14 +4752,14 @@ inet6_rtm_newaddr(struct sk_buff *skb, struct nlmsghdr *nlh,
  		 */
  		return inet6_addr_add(net, ifm->ifa_index, pfx, peer_pfx,
  				      ifm->ifa_prefixlen, ifa_flags,
@@ -4141,7 +4335,7 @@ index 2547222589fe..410a112180b1 100644
  
  	in6_ifa_put(ifa);
  
-@@ -4722,6 +4838,18 @@ static int inet6_fill_ifaddr(struct sk_buff *skb, struct inet6_ifaddr *ifa,
+@@ -4722,6 +4862,18 @@ static int inet6_fill_ifaddr(struct sk_buff *skb, struct inet6_ifaddr *ifa,
  	if (nla_put_u32(skb, IFA_FLAGS, ifa->flags) < 0)
  		goto error;
  
@@ -4160,7 +4354,7 @@ index 2547222589fe..410a112180b1 100644
  	nlmsg_end(skb, nlh);
  	return 0;
  
-@@ -5083,6 +5211,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
+@@ -5083,6 +5235,9 @@ static inline void ipv6_store_devconf(struct ipv6_devconf *cnf,
  	array[DEVCONF_ADDR_GEN_MODE] = cnf->addr_gen_mode;
  	array[DEVCONF_DISABLE_POLICY] = cnf->disable_policy;
  	array[DEVCONF_NDISC_TCLASS] = cnf->ndisc_tclass;
@@ -4170,7 +4364,7 @@ index 2547222589fe..410a112180b1 100644
  }
  
  static inline size_t inet6_ifla6_size(void)
-@@ -5568,7 +5699,7 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
+@@ -5568,7 +5723,7 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
  			addrconf_join_anycast(ifp);
  		if (!ipv6_addr_any(&ifp->peer_addr))
  			addrconf_prefix_route(&ifp->peer_addr, 128,
@@ -4179,7 +4373,7 @@ index 2547222589fe..410a112180b1 100644
  		break;
  	case RTM_DELADDR:
  		if (ifp->idev->cnf.forwarding)
-@@ -6390,6 +6521,15 @@ static const struct ctl_table addrconf_sysctl[] = {
+@@ -6390,6 +6545,15 @@ static const struct ctl_table addrconf_sysctl[] = {
  		.extra1		= (void *)&zero,
  		.extra2		= (void *)&two_five_five,
  	},
@@ -4344,7 +4538,7 @@ index 1ee5584c3555..f4097d356d80 100644
  		ndst = dst;
  	}
 diff --git a/net/ipv6/ndisc.c b/net/ipv6/ndisc.c
-index f61a5b613b52..b00b85ebdb2e 100644
+index f61a5b613b52..8d4f05419a74 100644
 --- a/net/ipv6/ndisc.c
 +++ b/net/ipv6/ndisc.c
 @@ -44,7 +44,9 @@
@@ -4715,7 +4909,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  		}
  
  		neigh = dst_neigh_lookup(&rt->dst, &ipv6_hdr(skb)->saddr);
-@@ -1308,13 +1593,22 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1308,13 +1593,28 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  				  "RA: %s got default router without neighbour\n",
  				  __func__);
  			ip6_rt_put(rt);
@@ -4731,15 +4925,21 @@ index f61a5b613b52..b00b85ebdb2e 100644
 +	/*
 +	 * Make sure this default route is linked to the pvd
 +	 */
-+	if (rt)
++	if (rt) {
 +		ND_PRINTK(3, info, "%s calls pvd_migrate_route() for default route\n", __func__);
-+		pvd_migrate_route(pvd, rt);
++		if(rtnl_is_locked()) {
++			pvd_migrate_route_rtnl(pvd, rt);
++		} else {
++			printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++			pvd_migrate_route(pvd, rt);
++		}
++	}
 +#endif
 +
  	if (rt)
  		rt6_set_expires(rt, jiffies + (HZ * lifetime));
  	if (in6_dev->cnf.accept_ra_min_hop_limit < 256 &&
-@@ -1389,6 +1683,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1389,6 +1689,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  			if (!lladdr) {
  				ND_PRINTK(2, warn,
  					  "RA: invalid link-layer address length\n");
@@ -4748,7 +4948,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  				goto out;
  			}
  		}
-@@ -1404,6 +1700,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1404,6 +1706,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  		ND_PRINTK(2, info,
  			  "RA: %s, accept_ra is false for dev: %s\n",
  			  __func__, skb->dev->name);
@@ -4757,7 +4957,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  		goto out;
  	}
  
-@@ -1419,9 +1717,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1419,9 +1723,16 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  
  	if (in6_dev->cnf.accept_ra_rtr_pref && ndopts.nd_opts_ri) {
  		struct nd_opt_hdr *p;
@@ -4775,7 +4975,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  			struct route_info *ri = (struct route_info *)p;
  #ifdef CONFIG_IPV6_NDISC_NODETYPE
  			if (skb->ndisc_nodetype == NDISC_NODETYPE_NODEFAULT &&
-@@ -1436,7 +1741,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1436,7 +1747,8 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  			if (ri->prefix_len > in6_dev->cnf.accept_ra_rt_info_max_plen)
  				continue;
  			rt6_route_rcv(skb->dev, (u8 *)p, (p->nd_opt_len) << 3,
@@ -4785,7 +4985,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  		}
  	}
  
-@@ -1449,18 +1755,26 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1449,18 +1761,26 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  		ND_PRINTK(2, info,
  			  "RA: %s, nodetype is NODEFAULT (interior routes), dev: %s\n",
  			  __func__, skb->dev->name);
@@ -4797,13 +4997,13 @@ index f61a5b613b52..b00b85ebdb2e 100644
  	if (in6_dev->cnf.accept_ra_pinfo && ndopts.nd_opts_pi) {
  		struct nd_opt_hdr *p;
 +#ifdef CONFIG_NETPVD
-+		for (p = ndopts.nd_opts_pi;
-+		     p;
-+			 p = ndisc_next_option(p, ndopts.nd_opts_pi_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
-+#else
  		for (p = ndopts.nd_opts_pi;
  		     p;
 -		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end)) {
++			 p = ndisc_next_option(p, ndopts.nd_opts_pi_end, ipv6_parse_pvd(in6_dev), pvd_hdr.offset_to_opt))
++#else
++		for (p = ndopts.nd_opts_pi;
++		     p;
 +		     p = ndisc_next_option(p, ndopts.nd_opts_pi_end))
 +#endif	
 +		{
@@ -4815,7 +5015,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  		}
  	}
  
-@@ -1485,10 +1799,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1485,10 +1805,20 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  
  	if (ndopts.nd_useropts) {
  		struct nd_opt_hdr *p;
@@ -4837,7 +5037,7 @@ index f61a5b613b52..b00b85ebdb2e 100644
  			ndisc_ra_useropt(skb, p);
  		}
  	}
-@@ -1496,6 +1820,49 @@ static void ndisc_router_discovery(struct sk_buff *skb)
+@@ -1496,6 +1826,49 @@ static void ndisc_router_discovery(struct sk_buff *skb)
  	if (ndopts.nd_opts_tgt_lladdr || ndopts.nd_opts_rh) {
  		ND_PRINTK(2, warn, "RA: invalid RA options\n");
  	}
@@ -4902,7 +5102,7 @@ index 98f61fcb9108..969a4a893d74 100644
  
  	nat = nf_ct_nat_ext_add(ct);
 diff --git a/net/ipv6/route.c b/net/ipv6/route.c
-index a560fb1d0230..14d0e77234bc 100644
+index a560fb1d0230..0a7d64c3f95a 100644
 --- a/net/ipv6/route.c
 +++ b/net/ipv6/route.c
 @@ -36,6 +36,7 @@
@@ -4913,18 +5113,23 @@ index a560fb1d0230..14d0e77234bc 100644
  #include <linux/in6.h>
  #include <linux/mroute6.h>
  #include <linux/init.h>
-@@ -410,6 +411,10 @@ static void ip6_dst_destroy(struct dst_entry *dst)
+@@ -410,6 +411,15 @@ static void ip6_dst_destroy(struct dst_entry *dst)
  	}
  
  	dst->from = NULL;
 +#ifdef	CONFIG_NETPVD
 +	printk("%s calls pvd_migrate_route()\n", __func__);
-+	pvd_migrate_route(NULL, rt);
++	if(rtnl_is_locked()) {
++		pvd_migrate_route_rtnl(NULL, rt);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++		pvd_migrate_route(NULL, rt);
++	}
 +#endif
  	dst_release(from);
  }
  
-@@ -488,12 +493,18 @@ static struct rt6_info *rt6_multipath_select(struct rt6_info *match,
+@@ -488,12 +498,18 @@ static struct rt6_info *rt6_multipath_select(struct rt6_info *match,
  
  /*
   *	Route lookup. rcu_read_lock() should be held.
@@ -4943,7 +5148,7 @@ index a560fb1d0230..14d0e77234bc 100644
  						    int flags)
  {
  	struct rt6_info *local = NULL;
-@@ -505,6 +516,20 @@ static inline struct rt6_info *rt6_device_match(struct net *net,
+@@ -505,6 +521,20 @@ static inline struct rt6_info *rt6_device_match(struct net *net,
  	for (sprt = rt; sprt; sprt = rcu_dereference(sprt->dst.rt6_next)) {
  		struct net_device *dev = sprt->dst.dev;
  
@@ -4964,7 +5169,7 @@ index a560fb1d0230..14d0e77234bc 100644
  		if (oif) {
  			if (dev->ifindex == oif)
  				return sprt;
-@@ -713,7 +738,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
+@@ -713,7 +743,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
  static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  				     struct rt6_info *leaf,
  				     struct rt6_info *rr_head,
@@ -4973,7 +5178,7 @@ index a560fb1d0230..14d0e77234bc 100644
  				     bool *do_rr)
  {
  	struct rt6_info *rt, *match, *cont;
-@@ -722,6 +747,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -722,6 +752,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	match = NULL;
  	cont = NULL;
  	for (rt = rr_head; rt; rt = rcu_dereference(rt->dst.rt6_next)) {
@@ -4985,7 +5190,7 @@ index a560fb1d0230..14d0e77234bc 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -732,6 +762,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -732,6 +767,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  
  	for (rt = leaf; rt && rt != rr_head;
  	     rt = rcu_dereference(rt->dst.rt6_next)) {
@@ -4997,7 +5202,7 @@ index a560fb1d0230..14d0e77234bc 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -743,14 +778,20 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -743,14 +783,20 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	if (match || !cont)
  		return match;
  
@@ -5020,7 +5225,7 @@ index a560fb1d0230..14d0e77234bc 100644
  {
  	struct rt6_info *leaf = rcu_dereference(fn->leaf);
  	struct rt6_info *match, *rt0;
-@@ -777,7 +818,7 @@ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
+@@ -777,7 +823,7 @@ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
  	if (fn->fn_bit != key_plen)
  		return net->ipv6.ip6_null_entry;
  
@@ -5029,7 +5234,7 @@ index a560fb1d0230..14d0e77234bc 100644
  			     &do_rr);
  
  	if (do_rr) {
-@@ -806,7 +847,7 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
+@@ -806,7 +852,7 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
  
  #ifdef CONFIG_IPV6_ROUTE_INFO
  int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
@@ -5038,7 +5243,7 @@ index a560fb1d0230..14d0e77234bc 100644
  {
  	struct net *net = dev_net(dev);
  	struct route_info *rinfo = (struct route_info *) opt;
-@@ -815,6 +856,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -815,6 +861,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  	unsigned long lifetime;
  	struct rt6_info *rt;
  
@@ -5050,7 +5255,7 @@ index a560fb1d0230..14d0e77234bc 100644
  	if (len < sizeof(struct route_info)) {
  		return -EINVAL;
  	}
-@@ -861,12 +907,25 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -861,12 +912,30 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  		rt = NULL;
  	}
  
@@ -5071,12 +5276,17 @@ index a560fb1d0230..14d0e77234bc 100644
 +	
 +#ifdef	CONFIG_NETPVD
 +	printk("%s calls pvd_migrate_route()\n", __func__);
-+	pvd_migrate_route(pvd, rt);
++	if(rtnl_is_locked()) {
++		pvd_migrate_route_rtnl(pvd, rt);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++		pvd_migrate_route(pvd, rt);
++	}
 +#endif
  
  	if (rt) {
  		if (!addrconf_finite_timeout(lifetime))
-@@ -921,16 +980,20 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
+@@ -921,16 +990,20 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
  {
  	struct rt6_info *rt, *rt_cache;
  	struct fib6_node *fn;
@@ -5098,7 +5308,7 @@ index a560fb1d0230..14d0e77234bc 100644
  		if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
  			rt = rt6_multipath_select(rt, fl6,
  						  fl6->flowi6_oif, flags);
-@@ -1653,6 +1716,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1653,6 +1726,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	struct fib6_node *fn, *saved_fn;
  	struct rt6_info *rt, *rt_cache;
  	int strict = 0;
@@ -5106,7 +5316,7 @@ index a560fb1d0230..14d0e77234bc 100644
  
  	strict |= flags & RT6_LOOKUP_F_IFACE;
  	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
-@@ -1667,8 +1731,12 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1667,8 +1741,12 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
  		oif = 0;
  
@@ -5120,7 +5330,7 @@ index a560fb1d0230..14d0e77234bc 100644
  	if (rt->rt6i_nsiblings)
  		rt = rt6_multipath_select(rt, fl6, oif, strict);
  	if (rt == net->ipv6.ip6_null_entry) {
-@@ -1884,6 +1952,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
+@@ -1884,6 +1962,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
@@ -5133,13 +5343,18 @@ index a560fb1d0230..14d0e77234bc 100644
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -2756,12 +2830,23 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg,
+@@ -2756,12 +2840,34 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg,
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
 +#ifdef	CONFIG_NETPVD
 +	printk("%s calls pvd_migrate_route()\n", __func__);
-+	pvd_migrate_route(cfg->fc_pvd, rt);
++	if(rtnl_is_locked()) {
++		pvd_migrate_route_rtnl(cfg->fc_pvd, rt);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++		pvd_migrate_route(cfg->fc_pvd, rt);
++	}
 +#endif
 +
  	return rt;
@@ -5151,13 +5366,19 @@ index a560fb1d0230..14d0e77234bc 100644
 +
 +#ifdef	CONFIG_NETPVD
 +	printk("%s calls pvd_migrate_route()\n", __func__);
-+	pvd_migrate_route(NULL, rt);	/* deassociate rt and its pvd */
++	/* deassociate rt and its pvd */
++	if(rtnl_is_locked()) {
++		pvd_migrate_route_rtnl(NULL, rt);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++		pvd_migrate_route(NULL, rt);
++	}
 +#endif
 +
  	if (rt)
  		dst_release_immediate(&rt->dst);
  
-@@ -3147,7 +3232,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
+@@ -3147,7 +3253,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -5168,7 +5389,7 @@ index a560fb1d0230..14d0e77234bc 100644
  	/* We should treat it as a default route if prefix length is 0. */
  	if (!prefixlen)
  		cfg.fc_flags |= RTF_DEFAULT;
-@@ -3198,6 +3285,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
+@@ -3198,6 +3306,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -5178,7 +5399,7 @@ index a560fb1d0230..14d0e77234bc 100644
  
  	if (!ip6_route_add(&cfg, NULL)) {
  		struct fib6_table *table;
-@@ -3366,6 +3456,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
+@@ -3366,6 +3477,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
@@ -5186,18 +5407,23 @@ index a560fb1d0230..14d0e77234bc 100644
  				    bool anycast)
  {
  	u32 tb_id;
-@@ -3383,6 +3474,10 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+@@ -3383,6 +3495,15 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
 +#ifdef	CONFIG_NETPVD
 +	printk("%s calls pvd_migrate_route()\n", __func__);
-+	pvd_migrate_route(pvd, rt);
++	if(rtnl_is_locked()) {
++		pvd_migrate_route_rtnl(pvd, rt);
++	} else {
++		printk("%s rtnl not locked, called pvd_migrate_route()\n", __func__);
++		pvd_migrate_route(pvd, rt);
++	}
 +#endif
  
  	rt->rt6i_protocol = RTPROT_KERNEL;
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
-@@ -3680,6 +3775,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -3680,6 +3801,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
  			goto errout;
  	}
  
@@ -5224,7 +5450,7 @@ index a560fb1d0230..14d0e77234bc 100644
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -4142,7 +4257,7 @@ static int rt6_fill_node(struct net *net,
+@@ -4142,7 +4283,7 @@ static int rt6_fill_node(struct net *net,
  				goto nla_put_failure;
  	} else if (dst) {
  		struct in6_addr saddr_buf;
@@ -5233,7 +5459,7 @@ index a560fb1d0230..14d0e77234bc 100644
  		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
  			goto nla_put_failure;
  	}
-@@ -4197,6 +4312,17 @@ static int rt6_fill_node(struct net *net,
+@@ -4197,6 +4338,17 @@ static int rt6_fill_node(struct net *net,
  	if (nla_put_u8(skb, RTA_PREF, IPV6_EXTRACT_PREF(rt->rt6i_flags)))
  		goto nla_put_failure;
  
