@@ -1,5 +1,5 @@
 The patch is functional, yet still far from perfect.
-Here a list of potential issues are maintained.
+Here a list of potential issues.
 
 # stale README
 
@@ -284,4 +284,14 @@ struct sock {
 __struct__ _task_struct_ and __struct__ _sock_ are both very important structures in kernel. It would be great to discuss with kernel maintainers on the best approach incorprating PvD info in them and on the behaviour of binding to non existant PvD.
 
 # Unregister PvD
+Discuss the pvd referece in other data strucutre.
+
 What happens unregistering a PvD while there is still thread/process/socket bound to it?
+
+# net_device removal
+Discuss the reference of other datas tructures held by net_pvd.
+
+
+# ifdef pre-prossesor
+
+# 
