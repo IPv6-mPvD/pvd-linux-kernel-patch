@@ -1,5 +1,6 @@
 The patch is functional, yet still far from perfect.
 Here a list of potential issues.
+Meanwhile, it serves as well clarifying the code design of the patch.
 
 # stale README
 
@@ -10,7 +11,7 @@ Reference the pvd-dev project on how to use this patch.
 
 # PvD data structure in network namespace
 
-In _include/net/net_namespace.h_, we can find the definition of __struct__ _net_ for each network namespace. 
+In _include/net/net_namespace.h_, we can find the definition of __struct__ _net_ for network namespace. 
 Thist patch adds attributes relating to PvD to this strucutre so that each network namespace has its own view on PvD.
 These attributes are enclosed in __CONFIG_NETPVD__ ifdef pre-processor:
 ```C
@@ -79,10 +80,10 @@ struct net {
     }
 ```
 
-The current pvd related data structure is basically a growable array with max size equal to MAXPVD.
-Everytime a  PvD is added to or removed from a network namesapce, __pvd_used_slots__, __pvd_free_slots__, __first_free_pvd_ix__, __first_used_pvd__ need to be potentially updated.
+The current pvd related data structures basically construct a growable array with max size equal to MAXPVD.
+Everytime a PvD is added to or removed from a network namesapce, __pvd_used_slots__, __pvd_free_slots__, __first_free_pvd_ix__, __first_used_pvd__ need to be potentially updated.
 To really understand how they are manuipulated, __register_pvd()__ and __unregister_pvd()__ in _net/core/pvd.c_ would be a good starting point.
-Apart from the non-intuitive (at least for me) approach, the main draw back is that since they are not simply built-in data structures such as link-list, protecting them from concurrent access is painful and error prone.
+Apart from the non-intuitive (at least for me) approach, the main draw back is that since they are not simply built-in data structures such as linked-list, protecting them from concurrent access is painful and error prone.
 
 A better practice would be to mimic how __net_device__ is managed in network namespace, more in __net/core/dev.c__.
 Foundementally, this implies (not exhaustive): 
@@ -95,6 +96,7 @@ Foundementally, this implies (not exhaustive):
 # Bind a thread/process/socket to a PvD
 
 The action of binding a thread/process/socket to a PvD dictates that the network traffic associated to the thread/process/socket is only allowed to use the routes, source addresses (managed in kernel) and DNS serverses (managed in userspace, say by [glibc](https://github.com/IPv6-mPvD/glibc.git)) attached to the PvD.
+
 By default, that is without any specification, socket inherits the binding of current thread, thread/process inherits the binding of its parent.
 A special binding status is binding to no PvD, which permits a thread/process/socket to use whatever route, addresses, regardless their PvD association.
 
@@ -109,9 +111,9 @@ struct task_struct {
    /* attributes omitted */
 }
 ```
-A char pointer _bound_pvd_ is added to the massive _task_struct_ to showcase its PvD binding status.
+A char pointer _bound_pvd_ is added to the massive _task_struct_ to record its PvD binding status.
 The value of this point is set to `((void *) 0)` when a thread/process inherts PvD binding from its parent; to `((void *) -1)` when a thread/process binds to no PvD.
-In order to explicitly bind a thread/process to a PvD, __function__ _sock_setbindtopvd()_ (implemented in  _net/core_pvd.c_) will be called.
+In order to explicitly bind a thread/process to a PvD, __function__ _sock_setbindtopvd()_ (implemented in  _net/core_pvd.c_) will be called, via _sock_setsockopt()_.
 ```c
 int sock_setbindtopvd(
 		struct sock *sk,
@@ -131,7 +133,8 @@ int sock_setbindtopvd(
         return ret;
 }
 ```
-Basically, the task_struct will learn the string containing the PvD name, a full qualified domain name (FQDN) when regarding an explicit PvD.
+Basically, the above function sets the _bound_pvd_ char pointer to 
+a string containing the PvD name, a full qualified domain name (FQDN) when regarding an explicit PvD.
 The problem of the above code is that it doesn't verify whether the __string__ _pvdname_ corresponds to a currently existing PvD in the kernel.
 As a matter of fact, a thread/process can be asked to bind to an arbitray string as PvD without any immediate error!
 
@@ -141,7 +144,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 			  int addr_len)
 {
     /* many things skipped */
-    #ifdef	CONFIG_NETPVD
+#ifdef	CONFIG_NETPVD
 	/*
 	 * fl6.pvd will only be used during the route and
 	 * source address selection of the connect() process
@@ -188,7 +191,7 @@ static int _pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd, int scope)
 	return ret;
 }
 ```
-This behaviour could be very annoying: an application will loose network connection because end-user or application itself carelessly forces the binding to a non-existatn PvD or a PvD have just disapeared.
+This behaviour could be very annoying: an application will loose network connection because end-user or application itself carelessly forces the binding to a non-existant PvD or a PvD have just disapeared.
 To avoid such consequence yet without changing the patch, we recommend verifying the binding result (thread/process scope) before generating traffic. An example code snippet for PvD-aware application is provided below:
 ```c
 /* tcp client that can be configured with a proc scope pvd binding*/
@@ -218,6 +221,7 @@ int main(int argc, char *argv[])
 
     if (strcasecmp(argv[1], "null") && strcasecmp(argv[1], "none")) {
         printf("Trying to bind to %s\n", argv[1]);
+        /* proc_bind_to_pvd exposed in libpvd.h, more in repo pvd-dev */
         if (proc_bind_to_pvd(argv[1]) < 0) {
             printf("Binding to %s failed\n", argv[1]);
             return EXIT_FAILURE;
@@ -246,7 +250,7 @@ int main(int argc, char *argv[])
 ```
 More on PvD-aware application development can be found in [pvd-dev](https://github.com/IPv6-mPvD/pvd-dev.git).
 
-One possible improvement/change is to verify whether the PvD actually exisits when binding a thread/process to it, by simply calling _pvd_get_by_name()_ in _sock_setbindtopvd()_. As a matter of fact, _sock_setbindtopvd()_ does already similar verification for socket level PvD binding:
+One possible improvement/change on the patch is to verify whether the PvD actually exisits when binding a thread/process to it, by simply calling _pvd_get_by_name()_ in _sock_setbindtopvd()_. As a matter of fact, _sock_setbindtopvd()_ does already similar verification for socket level PvD binding:
 ```c
 int sock_setbindtopvd(
 		struct sock *sk,
@@ -257,6 +261,7 @@ int sock_setbindtopvd(
     socket_scope :
     /* many things skipped */
 
+        /* pvd_get_by_name_rcu doesn't hold PvD reference */
         if (! (pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL))) {
 			sk->sk_pvd_bind_type = PVD_BIND_NOPVD;
 			ret = -ENETUNREACH;
@@ -269,7 +274,7 @@ int sock_setbindtopvd(
     return ret;
 }
 ```
-Correspondingly, the PvD related data structure amendement to __struct__ _sock_ in _include/net/sock.h_ is a bit different from that of __strucut__ _task_struct__.
+Correspondingly, the PvD related data structure amendement to __struct__ _sock_ in _include/net/sock.h_ is a bit different from that of __strucut__ _task_struct_.
 ```c
 struct sock {
     /* attributes omitted */
@@ -283,10 +288,27 @@ struct sock {
 
 __struct__ _task_struct_ and __struct__ _sock_ are both very important structures in kernel. It would be great to discuss with kernel maintainers on the best approach incorprating PvD info in them and on the behaviour of binding to non existant PvD.
 
-# Unregister PvD
-Discuss the pvd referece in other data strucutre.
+# PvD reference held by other data structures -- a view from PvD destruction process
 
-What happens unregistering a PvD while there is still thread/process/socket bound to it?
+From a data structure point of view, making the kernel aware of PvD is to make certain structures aware of its PvD context.
+What happens to __struct__ _task_struct_ and __struct__ _sock_ (the above section) is just a part of the stroy.
+How these structs hold and release the PvD reference impacts the destrcution of PvD data structure in kernel, either by garbage collection or by explicit command. 
+
+Here below is an exhaustive list of structures in kernek that have been ammended in this patch so that them can be associated to a PvD:
+* __struct__ _task_struct_ in _include/linux/sched.h_;
+* __struct__ _sock_ in _include/net/sock.h_;
+* __struct__ _ipv6_devconf_ in _include/linux/ipv6.h_;
+* __struct__ _flowi6_ in _include/net/flow.h_;
+* __struct__ _inet6_ifaddr_ in _include/net/if_inet6.h_;
+* __struct__ _fib6_config_ in include/net/ip6_fib.h;
+* __struct__ _rt6_info_ in include/net/ip6_fib.h.
+
+__struct__ _in6_ifreq_ in _include/uapi/linux/ipv6.h_ should (NOT DONE) as well have a PvD related field. _inet6_ioctl_ calls _addrconf_add_ifaddr_ to add an
+IPv6 address to a certain interface. 
+The _ioctl_ caller in userspace might want to specify the PvD attachment of this added IPv6 address.
+_addrconf_add_ifaddr_ casts user space request into __struct__ _in6_ifreq_ and calls _inet6_addr_add_ to do the real job. _inet6_addr_add_ takes a PvD pointer (currently set to NULL) which shall be derived from __struct__ _in6_ifreq_.
+
+What happens removing a PvD while its previous address and routing still in use? 
 
 # net_device removal
 Discuss the reference of other datas tructures held by net_pvd.
@@ -294,4 +316,3 @@ Discuss the reference of other datas tructures held by net_pvd.
 
 # ifdef pre-prossesor
 
-# 
