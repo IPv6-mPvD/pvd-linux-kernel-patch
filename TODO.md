@@ -4,6 +4,28 @@ This document aims at:
 
 Such that experienced users or futher devoloppers can easily pick it up and push it further.
 
+Table of Contents
+=================
+
+* [Usage of this patch](#usage-of-this-patch)
+* [PvD data structure in network namespace](#pvd-data-structure-in-network-namespace)
+* [Bind a thread/process/socket to a PvD](#bind-a-threadprocesssocket-to-a-pvd)
+* [PvD reference held by other data structures](#pvd-reference-held-by-other-data-structures)
+* [PvD\-aware IP forwarding and its relation to PBR, VRF/l3 domain](#pvd-aware-ip-forwarding-and-its-relation-to-pbr-vrfl3-domain)
+  * [PvD\-aware IP forwarding](#pvd-aware-ip-forwarding)
+  * [Can PvD\-aware IP forwarding be implemented as Policy Based Routing?](#can-pvd-aware-ip-forwarding-be-implemented-as-policy-based-routing)
+  * [Can PvD\-aware IP forwarding be implemented with VRF/L3 master device?](#can-pvd-aware-ip-forwarding-be-implemented-with-vrfl3-master-device)
+  * [The implementation in this patch](#the-implementation-in-this-patch)
+  * [Q&amp;A](#qa)
+    * [What happens removing a PvD while its previous address and routing still in use?](#what-happens-removing-a-pvd-while-its-previous-address-and-routing-still-in-use)
+    * [Does incoming traffic has PvD attachment? If a server app is bound to a PvD, how the kernel routes incoming traffic?](#does-incoming-traffic-has-pvd-attachment-if-a-server-app-is-bound-to-a-pvd-how-the-kernel-routes-incoming-traffic)
+    * [What happens we change the socket PvD binding during a connection?](#what-happens-we-change-the-socket-pvd-binding-during-a-connection)
+* [neighbour discovery and associating routes and addresses to a PvD](#neighbour-discovery-and-associating-routes-and-addresses-to-a-pvd)
+* [PvD management via rtnetlink](#pvd-management-via-rtnetlink)
+* [address, route config via ioctl and rtnetlink](#address-route-config-via-ioctl-and-rtnetlink)
+* [Reference of other kernel objects held by PvD](#reference-of-other-kernel-objects-held-by-pvd)
+* [ifdef pre\-prossesor](#ifdef-pre-prossesor)
+
 # Usage of this patch
 
 The patch in this k415 branch is build upon Ubuntu 1804 LTS source tree (commit hash: 1221ffab3e8e42c17c6c54cf60e037abd76e199a), and should be applied to 4.15 kernels.
