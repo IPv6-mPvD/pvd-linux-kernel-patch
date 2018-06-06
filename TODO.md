@@ -94,7 +94,7 @@ Apart from the non-intuitive (at least for me) approach, the main draw back is t
 
 A better practice would be to mimic how __net_device__ is managed in network namespace, more in __net/core/dev.c__.
 Foundementally, this implies (not exhaustive): 
-1. incorporate __list_head__ in __net_pvd__ defined in _include/net/pvd.h_;
+1. incorporate __list_head__ in __struct__ _net_pvd_ defined in _include/net/pvd.h_;
 2. change the way pvdindex is generated, this and following change deals with _net/core/pvd.c_;
 3. change the way a pvd is added to and removed from the network namespace using rcu primitives;
 4. change the way a pvd is searched by it name, pvdindex, associating device, etc, using rcu primitives.
@@ -311,7 +311,7 @@ __struct__ _task_struct_ and __struct__ _sock_ are both very important structure
 
 One missing feature on current patch is that: the binding of of thread/process/socket to multiple PvDs. This feature does not only deals with the PvD data structure in __struct__ _task_struct_ and __struct__ _sock_, but as well how PvD is enforced when performing route lookup and source address selection which will be discussed in detail later on.
 
-# PvD reference held by other data structures -- a view from PvD destruction process
+# PvD reference held by other data structures
 
 From a data structure point of view, making the kernel aware of PvD is to make certain kernel structures aware of its PvD context.
 What happens to __struct__ _task_struct_ and __struct__ _sock_ (the above section) is just a part of the stroy.
@@ -343,59 +343,115 @@ __struct__ _fib6_config_ is an intermediate structure (my personal understanding
 We can see that the PvD pointer __struct__ _fib6_config_ is eventually held by __struct__ _rt6_info_.
 
 # PvD-aware IP forwarding and its relation to PBR, VRF/l3 domain
-So far, we have seen that many data structual changes have been made to mark the presence of PvD in kernel.
+So far, we have seen that many datastructual changes have been made to mark the presence of PvD in kernel.
 But what are they for?
 
 The main feature of this patch can be roughly cut into following pieces:
-1. PvD discovery as a part of router discovery: associate each default route, prefix route, RIO route, address from PIO with A-flag to a correspoinding PvD;
+1. PvD discovery as a part of router discovery: associate each default route, prefix route, RIO route, address from PIO with A-flag to a correspoinding PvD (NOTE: need extend to other RA options in the future);
 2. PvD subsystem: manages the creation, deletion, as well as the association of PvD with other data strucutres;
 3. API and kernel implementation for binding a thread/process/socket to a subset of PvDs;
-4. API and kernel implemetation for querying and manipulating PvD datastructures in kernel.
+4. API and kernel implemetation for querying and manipulating PvD attributes;
 5. PvD-aware IP forwarding: PvD-specific route lookup and source address selection;
 
 As a matter of fact, PvD-aware IP forwarding is the core/ultimate purpose of all the above listed functions. All the rest can be regarded as preparations for the this final hit.
 
 ## PvD-aware IP forwarding
 PvD-aware IP forwarding is composed of two parts: route lookup and source address selection.
-In both parts, a route or an addressed can only be selected for IP forwarding if they satisfy
-the PvD association specified by the application context, i.e. thread/process/socket PvD binding.
+In both parts, a route or an addressed can only be selected and employed for IP forwarding if its PvD association satisfies the the application context, i.e. thread/process/socket PvD binding.
 
 More concretely, when a thread/process/socket is bound to no PvD, the kernel selects among all the avaible routes regardless their PvD association (just as what we do today), then picks the source address whose PvD matches the selected route (among other rules). Therefore the PvD feature in this patch can be seen as an implementation for the "famous" rule 5.5 defined in [RFC6724](https://tools.ietf.org/html/rfc6724).
 
 When a thread/process/socket is bound to one single PvD, the kernel should only employ the routes and source addresses associated to the specified PvD.
 
-When a thread/process/socket is bound to multiple PvDs (not implemented), the kernel should:
+When a thread/process/socket is bound to multiple PvDs (not yet implemented), the kernel should:
 1. either first tie break among avaible PvDs, via middleware, a transport scheduler, etc., then follow the principal of the case with singel PvD;
-2. either directly select among all routes whose associated PvD is within the specified PvD set, then pick the source address accordingly.
+2. either directly select among all routes whose associated PvD is within the specified PvD set, then pick the source address accordingly (closer to the procedure of binding to no PvD).
 
 What does it take to fullfill the above IP forwarding behaviour?
-We first disucss the possibility of realising them using existing techniques and tools, then move on to the implementation given by this patch.
+We first disucss the possibilities of realising them using existing techniques and tools, then move on to the implementation given by this patch.
 
 ## Can PvD-aware IP forwarding be implemented as Policy Based Routing?
-The basic idea is leverage the multiple routing table feature:
+The basic idea is to leverage the multiple routing table feature:
 1. create a routing table per PvD, and populate this routing table with routes belonging to this PvD.
 2. Attach the table to a fwmark rule;
-3. tag per-process traffic with cgroups;
-4. fwmark traffic with netfilter according their cgroups,example [here](https://www.evolware.org/?p=369);
+3. tag per-process traffic with cgroup;
+4. fwmark traffic with netfilter according their cgroup,example [here](https://www.evolware.org/?p=369);
 
 In case multiple or all PvD need to be considered, multiple routing tables can be chained up according to their priorities.
 
 The fatal issue of this approach is that it doesn't address the PvD compliance in source address selection.
 
-## Can PvD-aware IP forwarding be implemented with VRF, or rather a L3 master device?
-Can a PvD be regarded as a VRF device with is own routing table?
+## Can PvD-aware IP forwarding be implemented with VRF/L3 master device?
+Pushing the idea of one-routing-tabel-per-PvD further and addressing the issue of source address selection, one might naturally think of implementing PvD as a VRF.
+
+When, each interface on a host is exposed to at most one PvD (explicit and implicit), i.e. between any two PvD VRF their enslaving devices have no intersection, the approach is quite straightforward:
+1. handle received PvD as a VRF/L3 master device;
+2. enslave the interfaces receiving RA containing that PvD;
+3. populate VRF routing table with routes generated by the concerned RA(s);
+4. bind socket to PvD VRF, so that route lookup and source address selection only happens within the specified VRF L3 domain.
+
+In order to bind to multiple PvDs, an application (itself or via a middleware) has to first tie break among the mulitple VRF choices.
+
+Since each device can only be enslved by at most one VRF/L3 master device, this VRF appraoch becomes ill-fitting when an interface may receive multiple PvDs. This is actualy one driving case for the deployment of PvD, IPv6 multi-homing stub sites (e.g. entreprise network) exposing mulitple upstream providers (pure connection provider or application/service provider) to endhosts in the form of multiple defualt routes/next hops on each of their interfaces.
+
+An "ugly trick" though may work: for devices exposed to multiple PvDs, creat for each PvD a virtual interface and bridge it to the physical one. Each virtual interface is addressed with corresponding PvD options and enslaved to corresponding PvD VRF.
+This trick may complicate a lot the router discovery process, more specifically regarding device addressing:
+* when a phyiscal devices receives an RA it has first to discover all the PvDs, then spawn virtual devices if necessary, and eventually creat addresses and routes associated to it;
+* spawned virtual interface creats addresses and routes accoridng to its L3 domain association.
+
+The fundemental misfir of VRF with PvD is that there could acutally be a n*m mapping relationship between interfaces and PvDs, i.e. one PvD can present on multiple interfaces, while multiple PvDs may as well be present on a single interface.
 
 ## The implementation in this patch
+According to the earlier discussion on kernel data strucutre change, we regard PvD rather as a tag attached to flows, addresses and routes. This results minimum changes in implementing PvD-aware IP forwarding in a fairely nature way: add PvD matching test when performaning route lookup and source address selection.
 
-## Issue with the fib trie traversal
+More concretely, route lookup is composed of two big steps (once we know which table to look at) according to __function__ _ip6_pol_route()_ implemented in _net/ipv6_route.c_ (NOTE: __function__ _ip6_pol_route_lookup()_ is another route lookup API only used by netfilter; its call path won't be explained here):
+1. traverse the FIB trie (longest prefix matching) via a call to __function__ _fib6_lookup()_ then _fib6_lookup_1()_ defined in _net/ipv6/ip6_fib.c_ which returns a _fib6_node_ that contains pointer(s) to __struct__ _rt6_info_ (if RTN_RTINFO flag set for this _fib6_node_). A more detail explanation can be found [here](https://vincent.bernat.im/en/blog/2017-ipv6-route-lookup-linux). Most importantly, this patch changes nothing at this step.
+2. from the _fib_node_, select the best fitting route. Round-robin among routes of same metric, multipath routing (what's the difference between the two?), lookup in route cache, etc. may be involved in this step.
+This patch forces the selection of _rt6_info_ holding the specified PvD refernce in 
+__function__ _find_rr_leaf()_ along the call path from __function__ _rt6_select()_.
 
-## What happens removing a PvD while its previous address and routing still in use? 
-## Does incoming traffic has PvD attachment? If a server app bound to a PvD, how the kernel routes incoming traffic?
-## What happens we change the socket PvD binding during a connection?
+>If FIB trie traversal lands on a _fib6_node_ contains not route with matching PvD, _ip6_pol_route()_ goes upward in the fib trie, i.e. fib node with shorter prefix matching length, via a call to __function__ _fib_backtrack()_.
+
+When it deals with source address selection, the patch imposes the PvD compliance by completing the rule 5 in __function__ _ipv6_get_saddr_eval()_ defined in _net/ipv6/addrconf.c_:
+```c
+static int ipv6_get_saddr_eval(struct net *net,
+			       struct ipv6_saddr_score *score,
+			       struct ipv6_saddr_dst *dst,
+			       int i)
+{
+	/*lines omitted*/
+	case IPV6_SADDR_RULE_OIF:
+		/* Rule 5: Prefer pvd (if specified) then outgoing interface */
+#ifdef	CONFIG_NETPVD
+	    	if (dst->pvd != NULL && dst->pvd != score->ifa->pvd) {
+			ret = 0;
+			break;
+		}
+#endif
+		ret = (!dst->ifindex ||
+		       dst->ifindex == score->ifa->idev->dev->ifindex);
+		break;
+	/*lines omitted*/
+}
+```
+
+## Q&A
+### What happens removing a PvD while its previous address and routing still in use?
+depends on whether the route lookup and source address selection result is cached in socket or not.
+
+### Does incoming traffic has PvD attachment? If a server app is bound to a PvD, how the kernel routes incoming traffic?
+TODO
+
+### What happens we change the socket PvD binding during a connection?
+let's first see what happens if we change the device binding of a TCP connection.
 
 # neighbour discovery and associating routes and addresses to a PvD
+explain the parsing of RA
+
 
 # PvD management via rtnetlink
+current we can only receive PvD status update, RDNS, DNSSL update via rtnetlink.
+the creation, deletion, and attribute query to a PvD is actually done via setsockopt option.
 
 # address, route config via ioctl and rtnetlink
 
@@ -404,10 +460,12 @@ IPv6 address to a certain interface.
 The _ioctl_ caller in userspace might want to specify the PvD attachment of this added IPv6 address.
 _addrconf_add_ifaddr_ casts user space request into __struct__ _in6_ifreq_ and calls _inet6_addr_add_ to do the real job. _inet6_addr_add_ takes a PvD pointer (currently set to NULL) which shall be derived from __struct__ _in6_ifreq_.
 
+to verify, it seems to me not possible add address route with PvD association. rtnetlink message strucutre change need, address route addition need to check the PvD existance as well.
 
-# net_device removal
-Discuss the reference of other datas tructures held by net_pvd.
+# Reference of other kernel objects held by PvD
+net_device case: why PvD needs to hold the net_device reference; what do we do on device removal.
 
 
 # ifdef pre-prossesor
+which code should be enclosed in ifdef-pre-prossesor
 
