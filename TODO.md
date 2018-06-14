@@ -4,6 +4,14 @@ This document aims at:
 
 Such that experienced users or futher devoloppers can easily pick it up and push it further.
 
+Since the end of 2017, there has been continuous [IETF efforts](https://tools.ietf.org/html/draft-bruneau-intarea-provisioning-domains-02) 
+to standardize a way for discoverying (for host)/advertising(for network) [Provision Domains](https://tools.ietf.org/html/rfc7556) (PvD) via IPv6 Router Advertisement (RA).
+
+This Linux kernel patch mainly implements:
+* __neighbour discovery:__ parsing of RAs containing PvD Option; associating IPv6 addresses and routes to a certain PvD;
+* __socket/thread/process binding__: setsockopt options to bind a socket/thread/process to a specified PvD;
+* __IPv6 route & source address selection:__ select routes and source address in compliance with socket PvD binding; the PvD-aware source address selection behaviour can be regarded as an implementation for rule 5.5 defined in [RFC6724](https://tools.ietf.org/html/rfc6724).
+
 Table of Contents
 =================
 
@@ -32,14 +40,14 @@ The patch in this k415 branch is build upon Ubuntu 1804 LTS source tree (commit 
 
 The PvD feature is controlled by the Kernel configuration option CONFIG_NETPVD under _drivers->net_ (doesn't seem to me as the most fitting place).
 
-The feature can be activated (by default)/deactivated on a per interface base through sytsctl entry _net.conf.ipv6.[interface].parse_pvd_. (NOTE: like _accepte_ra_ entry, there is no handle implemented for __all__ interface.)
+The feature can be activated (by default)/deactivated on a per interface base through sytsctl entry _net.conf.ipv6.[interface].parse_pvd_. (NOTE: like _accepte_ra_ entry, there is no handler implemented for __all__ interface.)
 
 A tutorial on how to apply this patch and run PvD-aware applications on top of it can be found in [pvd-dev](https://github.com/IPv6-mPvD/pvd-dev.git).
 
 # PvD data structure in network namespace
 
 [Network namespace](https://lwn.net/Articles/531114/), like other linux namespaces, provides resource isolation, assoicated with networking, e.g. network devices, IP addresses and routing tables.
-Accordingly, it is all fitting and even necessary that each network namespace has its individual view of PvD. To that end, this patch adds PvD-related data structure to network namespace data strucutre and manges them, in a way similar to how current kernel manages network devices: __struct__ _net_device_.
+Accordingly, it is all fitting and even necessary that each network namespace has its individual view of PvD. To that end, this patch adds PvD-related data structure to network namespace data strucutre and manges them in a way similar to how current kernel manages network devices: __struct__ _net_device_.
 
 In _include/net/net_namespace.h_ under kernel source repository, we can find the definition of __struct__ _net_ for network namespace. 
 Those PvD-related attributes are are enclosed in __CONFIG_NETPVD__ ifdef pre-processor:
@@ -112,12 +120,12 @@ struct net {
 The current PvD-related data strucutre basically constructs a growable array with max size equal to MAXPVD.
 Everytime a PvD is added to or removed from a network namesapce, __pvd_used_slots__, __pvd_free_slots__, __first_free_pvd_ix__, __first_used_pvd__ need to be potentially updated.
 To really understand how they are manuipulated, __register_pvd()__ and __unregister_pvd()__ in _net/core/pvd.c_ would be the ultimate, self-explanatory places to look at.
-Apart from the non-intuitive (at least for me) approach, the main draw back is that since they are not built-in data structures such as linked-list, protecting them from concurrent access is painful and error prone.
+Apart from the non-intuitive (at least for me) approach, the main draw back is that since they are not built-in data structures such as linked-list, protecting them from concurrent access can rely on the RCU mechanism, instead RWLOCK is used.
 
 A better practice would be to mimic how __net_device__ is managed in network namespace, more in __net/core/dev.c__.
-Foundementally, this implies (not exhaustive): 
+Fundementally, this implies (not exhaustive): 
 1. incorporate __list_head__ in __struct__ _net_pvd_ defined in _include/net/pvd.h_;
-2. change the way pvdindex is generated, this and following change deals with _net/core/pvd.c_;
+2. change the way pvdindex is generated, this and following changes deal with _net/core/pvd.c_;
 3. change the way a pvd is added to and removed from the network namespace using rcu primitives;
 4. change the way a pvd is searched by it name, pvdindex, associating device, etc, using rcu primitives.
 
@@ -126,7 +134,7 @@ The action of binding a thread/process/socket to a PvD dictates that the network
 
 > [Out-of-scope comment] A PvD-aware application should then be at least capable of:
 >1. learning about the avaiable PvDs and their attribites and characteristics;
->2. bind its child processes/threads, or sockets to one or some PvDs according to its application network delivery needs (NOTE: the PvD binding of thread and process may change over their lifetime. What happens if we change the PvD binding of TCP socket during its lifetime?).
+>2. bind its child processes/threads, or sockets to one or some PvDs according to its application delivery needs (NOTE: the PvD binding of thread and process may change over their lifetime. What happens if we change the PvD binding of TCP socket during its lifetime?).
 
 >Or the above function is realised by a middleware provding socket-like API, e.g. [NEAT](https://www.neat-project.org/publications/).
 
@@ -236,61 +244,21 @@ static int _pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd, int scope)
 This behaviour could be very annoying: an application will lose network connection because end-user or application itself carelessly forces the binding to a non-existant PvD.
 To avoid such consequence yet without changing the patch, we recommend verifying the binding result (thread/process scope) before generating traffic. An example code snippet for PvD-aware application is provided below:
 ```c
-/* tcp client that can be configured with a proc scope pvd binding*/
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <libpvd.h>
-#include <string.h>
-#include <strings.h>
+char pvdname[256];
+proc_get_bound_pvd(pvdname);
 
-#define SERVE_PORT 8888
-
-int main(int argc, char *argv[])
-{
-    int sock_fd = -1;
-    struct sockaddr_in6 server_addr;
-    int ret;
-    char buf[65535];
-
-    if (argc !=3) {
-        printf("Usage: %s pvdname server_addr\n pvdname null/none for not binding to any pvd\n", argv[0]);
+if (strcmp(pvdname, target_pvd) == 0) {
+    printf("Process is successfully bound to pvd %s\n", argv[1]);
+} else {
+    if (proc_bind_to_nopvd() < 0) {
+        printf("Process failed binding to pvd %s and as well as failed unbinding\n", argv[1]);
         return EXIT_FAILURE;
+    } else {
+        printf("Process failed binding to pvd %s, thus remain unbound to any pvd\n", argv[1]);
     }
-
-    if (strcasecmp(argv[1], "null") && strcasecmp(argv[1], "none")) {
-        printf("Trying to bind to %s\n", argv[1]);
-        /* proc_bind_to_pvd exposed in libpvd.h, more in repo pvd-dev */
-        if (proc_bind_to_pvd(argv[1]) < 0) {
-            printf("Binding to %s failed\n", argv[1]);
-            return EXIT_FAILURE;
-        }
-
-        char pvdname[256];
-        proc_get_bound_pvd(pvdname);
-
-        if (strcmp(pvdname, argv[1]) == 0) {
-            printf("Process is successfully bound to pvd %s\n", argv[1]);
-        } else {
-            if (proc_bind_to_nopvd() < 0) {
-                printf("Process failed binding to pvd %s and as well as failed unbinding\n", argv[1]);
-                return EXIT_FAILURE;
-            } else {
-                printf("Process failed binding to pvd %s, thus remain unbound to any pvd\n", argv[1]);
-            }
-        }
-    }
-
-    sock_fd = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-
-    /* standard socket communication in the following up */
-
 }
 ```
-More on PvD-aware application development can be found in [pvd-dev](https://github.com/IPv6-mPvD/pvd-dev.git).
+More on PvD-aware application development can be found in [glibc/test](https://github.com/MiDiBa/glibc-mPvD).
 
 One possible improvement to/change on the patch is to verify whether the PvD actually exisits when binding a thread/process to it, by simply calling _pvd_get_by_name_rcu()_ in _sock_setbindtopvd()_. As a matter of fact, _sock_setbindtopvd()_ does already similar verification for socket level PvD binding:
 ```c
@@ -333,13 +301,13 @@ __struct__ _task_struct_ and __struct__ _sock_ are both very important structure
 
 One missing feature on current patch is that: the binding of of thread/process/socket to multiple PvDs. This feature does not only deals with the PvD data structure in __struct__ _task_struct_ and __struct__ _sock_, but as well how PvD is enforced when performing route lookup and source address selection which will be discussed in detail later on.
 
-# PvD reference held by other data structures
+# PvD pointer held by other data structures
 
 From a data structure point of view, making the kernel aware of PvD is to make certain kernel structures aware of its PvD context.
 What happens to __struct__ _task_struct_ and __struct__ _sock_ (the above section) is just a part of the stroy.
-How these structs hold and release the PvD reference impacts the destrcution of PvD data structure in kernel, either by garbage collection or by explicit command. 
+How these structs hold and release the PvD pointers impacts the life cycle of PvD datastructures in kernel.
 
-Here below is an exhaustive list of structures in kernel that have been ammended in this patch so that they can be associated to a PvD:
+Here below is an exhaustive list of structures that are ammended in this patch so that they can be associated to a PvD:
 * __struct__ _task_struct_ in _include/linux/sched.h_;
 * __struct__ _sock_ in _include/net/sock.h_;
 * __struct__ _flowi6_ in _include/net/flow.h_;
@@ -355,7 +323,7 @@ __struct__ _flowi6_ holds the PvD reference, and releases it as soon as route lo
 __struct__ _inet6_ifaddr_ holds PvD reference, and it is forced to release the reference by migrating to a NULL PvD when get removed, via a call to __function__ _pvd_migrate_addr()_ defined in _net/core/pvd.c_.
 Similarily, __struct__ _rt6_info_ holds as well PvD reference, and releases it when removed through a call to __function__ _pvd_migrate_route()_ implmented in _net/core/pvd.c_.
 
-__struct__ _fib6_config_ is an intermediate structure (my personal understanding) for creating a route. A concerned call path is when the kernel receives an RA with PIO, the kernel creates a route for the prefix of the PIO. The whole call path is given as the follow:
+__struct__ _fib6_config_ is an intermediate structure (my personal understanding) to route creation. A concerned call path is when the kernel receives an RA with PIO, the kernel creates a route for the prefix of the PIO. The whole call path is given as the follow:
 1. __function__ _ndisc_router_discovery()_ in _net/ipv6/ndisc.c_;
 2. __function__ _addrconf_prefix_rcv()_ in _net/ipv6/addrconf.c_;
 3. __function__ _addrconf_prefix_route()_ in _net/ipv6/addrconf.c_, here a variable of __struct__ _fib_config_ in type is created and given the PvD pointer;
@@ -370,7 +338,7 @@ But what are they for?
 
 The main feature of this patch can be roughly cut into following pieces:
 1. PvD discovery as a part of router discovery: associate each default route, prefix route, RIO route, address from PIO with A-flag to a correspoinding PvD (NOTE: need extend to other RA options in the future);
-2. PvD subsystem: manages the creation, deletion, as well as the association of PvD with other data strucutres;
+2. PvD module: manages the creation, deletion, as well as the association of PvD with other data strucutres;
 3. API and kernel implementation for binding a thread/process/socket to a subset of PvDs;
 4. API and kernel implemetation for querying and manipulating PvD attributes;
 5. PvD-aware IP forwarding: PvD-specific route lookup and source address selection;
@@ -396,17 +364,17 @@ We first disucss the possibilities of realising them using existing techniques a
 The basic idea is to leverage the multiple routing table feature:
 1. create a routing table per PvD, and populate this routing table with routes belonging to this PvD.
 2. Attach the table to a fwmark rule;
-3. tag per-process traffic with cgroup;
+3. tag per-process traffic with [cgroup](https://lwn.net/Articles/679786/);
 4. fwmark traffic with netfilter according their cgroup,example [here](https://www.evolware.org/?p=369);
 
-In case multiple or all PvD need to be considered, multiple routing tables can be chained up according to their priorities.
+In case multiple or all PvDs need to be considered, multiple routing tables can be chained up according to their priorities.
 
 The fatal issue of this approach is that it doesn't address the PvD compliance in source address selection.
 
 ## Can PvD-aware IP forwarding be implemented with VRF/L3 master device?
 Pushing the idea of one-routing-tabel-per-PvD further and addressing the issue of source address selection, one might naturally think of implementing PvD as a VRF.
 
-When, each interface on a host is exposed to at most one PvD (explicit and implicit), i.e. between any two PvD VRF their enslaving devices have no intersection, the approach is quite straightforward:
+When each interface on a host is exposed to at most one PvD (explicit and implicit), i.e. between any two PvD VRF their enslaving devices have no intersection, the approach is quite straightforward:
 1. handle received PvD as a VRF/L3 master device;
 2. enslave the interfaces receiving RA containing that PvD;
 3. populate VRF routing table with routes generated by the concerned RA(s);
@@ -421,7 +389,7 @@ This trick may complicate a lot the router discovery process, more specifically 
 * when a phyiscal devices receives an RA it has first to discover all the PvDs, then spawn virtual devices if necessary, and eventually creat addresses and routes associated to it;
 * spawned virtual interface creats addresses and routes accoridng to its L3 domain association.
 
-The fundemental misfir of VRF with PvD is that there could acutally be a n*m mapping relationship between interfaces and PvDs, i.e. one PvD can present on multiple interfaces, while multiple PvDs may as well be present on a single interface.
+The fundemental misfit of VRF with PvD is that there could acutally be a n*m mapping relationship between interfaces and PvDs, i.e. one PvD can present on multiple interfaces, while multiple PvDs may as well be present on a single interface.
 
 ## The implementation in this patch
 According to the earlier discussion on kernel data strucutre change, we regard PvD rather as a tag attached to flows, addresses and routes. This results minimum changes in implementing PvD-aware IP forwarding in a fairely nature way: add PvD matching test when performaning route lookup and source address selection.
@@ -459,35 +427,150 @@ static int ipv6_get_saddr_eval(struct net *net,
 
 ## Q&A
 ### What happens removing a PvD while its previous address and routing still in use?
-depends on whether the route lookup and source address selection result is cached in socket or not.
+It depends on whether the route lookup and source address selection result is cached in socket or not.
 
 ### Does incoming traffic has PvD attachment? If a server app is bound to a PvD, how the kernel routes incoming traffic?
 TODO
 
 ### What happens we change the socket PvD binding during a connection?
-let's first see what happens if we change the device binding of a TCP connection.
+Let's first see what happens if we change the device binding of a TCP connection.
 
-# neighbour discovery and associating routes and addresses to a PvD
-explain the parsing of RA
+# Parsing PvD option in RA
+The PvD association of IPv6 routes and addresses is a result of rotuer discovery, i.e. parsing of RA.
+According to [current draft](https://tools.ietf.org/html/draft-ietf-intarea-provisioning-domains-02),
+each RA can contain at most one PvD option. Each PvD option can embed RA options.
 
+When an RA contains no PvD option, all the routes (default routes, PIO routes, RIO routes
+) and addresess(auto config from PIO) are associated to a PvD identified by the LLA of the router and the host interface receving the RA. Such PvD is known as implict PvD.
 
-# PvD management via rtnetlink
-current we can only receive PvD status update, RDNS, DNSSL update via rtnetlink.
-the creation, deletion, and attribute query to a PvD is actually done via setsockopt option.
+When an RA contains an PvD option, all the routes and addresses (no matter in or outside the PvD option)
+are associate to the PvD identified by its PvD ID. The patch parses ND options in RA in order, no matter in or outside the PvD option. PvD-unware hosts ignores the entire PvD option "container", while PvD-aware hosts can look into the PvD option "container" and parse ND options there.
+
+In order to fulfill the above behaviour, the patch made following changes to _net/ipv6/ndisc.c_:
+1. a parser for PvD option and ND options inside __function__ _pvdid_parse_opt()_;
+2. __function__ _ndisc_parse_options()_ is modified to handle PvD option;
+3. __function__ _ndisc_router_discovery()_ is modified to create PvD object and associte routes and addresses to it;
+4. __function__ _ndisc_next_option()_ and _ndisc_next_useropt()_ are modified to iterate ND options inside PvD option "container".
+
+# PvD notification and management
+Currently we can receive updates on PvD status, RDNS, DNSSL update via rtnetlink. Message code defined in _inlcude/uapi/linux/rtnetlink.h_:
+```c
+/*many line omitted*/
+RTM_PVDSTATUS = 100,
+#define RTM_PVDSTATUS RTM_PVDSTATUS
+	RTM_RDNSS = 101,
+#define RTM_RDNSS RTM_RDNSS
+	RTM_DNSSL = 102,
+#define RTM_DNSSL RTM_DNSSL
+
+	__RTM_MAX,
+#define RTM_MAX		(((__RTM_MAX + 3) & ~3) - 1)
+};
+/*many line omitted*/
+```
+
+However, the creation, deletion, and attribute query to a PvD are actually done via set/getsockopt options. Option types are defined in _include/upai/asm-generic/socket.h_:
+```c
+#define	SO_BINDTOPVD		61
+#define	SO_GETPVDLIST		62
+#define	SO_GETPVDATTRIBUTES	63
+#define	SO_CREATEPVD		64
+```
+The implementation for these options can be found in _net/core/pvd.c_.
+
+The ideal would be rather via rtnetlink. This requries:
+* defining PvD message attributes;
+* add RTM message definition; the attributes could include addresses and routes;
+* register handler for these messages;
+* change the current implementation output.
 
 # address, route config via ioctl and rtnetlink
+
+Apart from PvD assocaition obtained from RA parsing, it is as well possible to create addresses and routes with PvD association via rtnetlink, RTM_NEWROUTE and RTM_NEWADDR separatly.
+Route message attributes are extended in _inlcude/uapi/linux/rtnetlink.h_, while address message attributes are extended in _inlcude/uapi/linux/if_addr.h_.
+Corresponding handlers are hence as well modified:
+* __function__ _inet6_rtm_newaddr()_ is a handler registered in _net/ipv6/addrconf.c_ for RTM_NEWADDR message;
+* __function__ _inet6_rtm_newroute()_ in _net/ipv6/route.c_ for RTM_NEWROUTE remain unchanged, yet on its call path __function__ _rtm_to_fib6_config()_ defined in the same file has been changed.
 
 __struct__ _in6_ifreq_ in _include/uapi/linux/ipv6.h_ should (NOT DONE) as well have a PvD related field. _inet6_ioctl_ calls _addrconf_add_ifaddr_ to add an
 IPv6 address to a certain interface. 
 The _ioctl_ caller in userspace might want to specify the PvD attachment of this added IPv6 address.
 _addrconf_add_ifaddr_ casts user space request into __struct__ _in6_ifreq_ and calls _inet6_addr_add_ to do the real job. _inet6_addr_add_ takes a PvD pointer (currently set to NULL) which shall be derived from __struct__ _in6_ifreq_.
 
-to verify, it seems to me not possible add address route with PvD association. rtnetlink message strucutre change need, address route addition need to check the PvD existance as well.
+# PvD datastructure in kernel and the pointers it holds
+Last but not least, let's have a look at how a PvD object looks like in kernel.
+__struct__ _net_pvd_ is defined in _include/net/pvd.h_:
+```c
+struct net_pvd {
+	struct net_pvd		*next;
 
-# Reference of other kernel objects held by PvD
-net_device case: why PvD needs to hold the net_device reference; what do we do on device removal.
+	char			name[PVDNAMSIZ];
+	struct hlist_node	name_hlist;
+	int __percpu		*pcpu_refcnt;
+	u32			pvdindex;	/* unique number */
+	int			_index;		/* index in net->pvd_used_slots */
+	int			notifications_blocked;
 
+	/*
+	 * Attributes of the pvd
+	 */
+	int			sequence_number;
+	int			h_flag;
+	int			l_flag;
+	int 		a_flag;  /* introduced in draft 01 */
+	int			implicit_flag;
+
+	possible_net_t		nd_net;
+
+	struct net_device	*dev;	/* the device it has been received on */
+	struct in6_addr		lla;	/* the associated router lla */
+	int			nroutes;
+	struct rt6_info		*routes[MAXROUTESPERPVD];
+	int			naddresses;
+	struct inet6_ifaddr	*addresses[MAXADDRPERPVD];
+	
+	int			ndnssl;
+	char			*dnssl[MAXDNSSLPERPVD];
+	unsigned long		dnsslExpire[MAXDNSSLPERPVD];
+
+
+	int			nrdnss;
+	struct in6_addr		rdnss[MAXRDNSSPERPVD];
+	unsigned long		rdnssExpire[MAXRDNSSPERPVD];
+
+#ifdef CONFIG_NETPVD
+	/*
+	 * pvd.d/
+	 * 	<pvdname>/
+	 * 		attrs
+	 * 		routes
+	 * 		addrs
+	 * 		sockets
+	 */
+	struct proc_dir_entry 	*proc_pvd;		/* dir */
+	struct proc_dir_entry 	*proc_pvd_attrs;	/* file */
+	struct proc_dir_entry 	*proc_pvd_routes;	/* file */
+	struct proc_dir_entry 	*proc_pvd_addrs;	/* file */
+	struct proc_dir_entry 	*proc_pvd_rdnss;	/* file */
+	struct proc_dir_entry 	*proc_pvd_dnssl;	/* file */
+	struct proc_dir_entry 	*proc_pvd_sockets;	/* file */
+#endif
+};
+```
+We can see form above that a PvD object might hold pointer to the _net_device_ via which it is received, addresses and routes attached to it. dnssl and rdnss are not kernel data strucutres, and we are not going to cover them here.
+
+As explained earlier, when address or route get removed, _pvd_migrate_addr()_ and _pvd_migrate_route()_ (sep.) are called to release the PvD pointer they hold.
+The two migrations function update the address and route list in _net_pvd_ structure correspodningly, so that _net_pvd_ won't refer to freed pointers.
+
+It is a bit different when it deals with _net_device_ pointer.
+Only implicit PvD holds the device pointer, as its creation and existence partially relies on the existence of the device.
+Explicit PvD has its device pointer set to NULL. 
+The device pointer held by _net_pvd_ is only relased at the removal of a PvD. 
+This implies a removal of _net_device_, or other operation resulting a removal of _net_device_ say removal of a network namespace, might be blocked the presence of PvD that can only be removed via setscockopt call. 
+
+The ideal would be implemeting a device event handler for NETDEV_UNREGISTER and NETDEV_UNREGISTER_FINAL. 
+For example, upon the removal of a _net_device_, we remove automatically the PvDs relying on that interface as well. As a matter of fact, a tentative implementation (not used) is present in this patch __function__ _pvd_netdev_event()_ in _net/core/pvd.c_. However the registeration fails when initating the PvD module at boot phase for reasons currently unknown to the auther.
 
 # ifdef pre-prossesor
-which code should be enclosed in ifdef-pre-prossesor
+Which codes should be enclosed in ifdef-pre-prossesor CONFIG_NETPVD?
 
