@@ -10,7 +10,7 @@ to standardize a way for discoverying (for host)/advertising(for network) [Provi
 This Linux kernel patch mainly implements:
 * __neighbour discovery:__ parsing of RAs containing PvD Option; associating IPv6 addresses and routes to a certain PvD;
 * __socket/thread/process binding__: setsockopt options to bind a socket/thread/process to a specified PvD;
-* __IPv6 route & source address selection:__ select routes and source address in compliance with socket PvD binding; the PvD-aware source address selection behaviour can be regarded as an implementation for rule 5.5 defined in [RFC6724](https://tools.ietf.org/html/rfc6724).
+* __IPv6 route & source address selection:__ IPv6 route selection in compliance with socket PvD binding; IPv6 source address selection in compliance with route PvD association; the PvD-aware source address selection behaviour can be regarded as an implementation for rule 5.5 defined in [RFC6724](https://tools.ietf.org/html/rfc6724).
 
 Table of Contents
 =================
@@ -24,10 +24,6 @@ Table of Contents
   * [Can PvD\-aware IP forwarding be implemented as Policy Based Routing?](#can-pvd-aware-ip-forwarding-be-implemented-as-policy-based-routing)
   * [Can PvD\-aware IP forwarding be implemented with VRF/L3 master device?](#can-pvd-aware-ip-forwarding-be-implemented-with-vrfl3-master-device)
   * [The implementation in this patch](#the-implementation-in-this-patch)
-  * [Q&amp;A](#qa)
-    * [What happens removing a PvD while its previous address and routing still in use?](#what-happens-removing-a-pvd-while-its-previous-address-and-routing-still-in-use)
-    * [Does incoming traffic has PvD attachment? If a server app is bound to a PvD, how the kernel routes incoming traffic?](#does-incoming-traffic-has-pvd-attachment-if-a-server-app-is-bound-to-a-pvd-how-the-kernel-routes-incoming-traffic)
-    * [What happens we change the socket PvD binding during a connection?](#what-happens-we-change-the-socket-pvd-binding-during-a-connection)
 * [neighbour discovery and associating routes and addresses to a PvD](#neighbour-discovery-and-associating-routes-and-addresses-to-a-pvd)
 * [PvD management via rtnetlink](#pvd-management-via-rtnetlink)
 * [address, route config via ioctl and rtnetlink](#address-route-config-via-ioctl-and-rtnetlink)
