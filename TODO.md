@@ -2,10 +2,10 @@ This document aims at:
 1. clarifing a bit the code design of this patch in fulfilling the PvD feature;
 2. exposing some un-addressed issues regarding this patch: what is the problem, potential solutions, pro/con/cost of the soltions;
 
-Such that experienced users or futher devoloppers can easily pick it up and push it further.
+Such that experienced users or future devoloppers can easily pick it up and push it further.
 
 Since the end of 2017, there has been continuous [IETF efforts](https://tools.ietf.org/html/draft-bruneau-intarea-provisioning-domains-02) 
-to standardize a way for discoverying (for host)/advertising(for network) [Provision Domains](https://tools.ietf.org/html/rfc7556) (PvD) via IPv6 Router Advertisement (RA).
+to standardize a mechanism of discoverying (for host)/advertising(for network) [Provision Domains](https://tools.ietf.org/html/rfc7556) (PvD) via IPv6 Router Advertisement (RA).
 
 This Linux kernel patch mainly implements:
 * __neighbour discovery:__ parsing of RAs containing PvD Option; associating IPv6 addresses and routes to a certain PvD;
@@ -15,21 +15,21 @@ This Linux kernel patch mainly implements:
 Table of Contents
 =================
 
+* [Table of Contents](#table-of-contents)
 * [Usage of this patch](#usage-of-this-patch)
 * [PvD data structure in network namespace](#pvd-data-structure-in-network-namespace)
 * [Bind a thread/process/socket to a PvD](#bind-a-threadprocesssocket-to-a-pvd)
-* [PvD reference held by other data structures](#pvd-reference-held-by-other-data-structures)
+* [PvD pointer held by other data structures](#pvd-pointer-held-by-other-data-structures)
 * [PvD\-aware IP forwarding and its relation to PBR, VRF/l3 domain](#pvd-aware-ip-forwarding-and-its-relation-to-pbr-vrfl3-domain)
   * [PvD\-aware IP forwarding](#pvd-aware-ip-forwarding)
   * [Can PvD\-aware IP forwarding be implemented as Policy Based Routing?](#can-pvd-aware-ip-forwarding-be-implemented-as-policy-based-routing)
   * [Can PvD\-aware IP forwarding be implemented with VRF/L3 master device?](#can-pvd-aware-ip-forwarding-be-implemented-with-vrfl3-master-device)
   * [The implementation in this patch](#the-implementation-in-this-patch)
-* [neighbour discovery and associating routes and addresses to a PvD](#neighbour-discovery-and-associating-routes-and-addresses-to-a-pvd)
-* [PvD management via rtnetlink](#pvd-management-via-rtnetlink)
+* [Parsing PvD option in RA](#parsing-pvd-option-in-ra)
+* [PvD notification and management](#pvd-notification-and-management)
 * [address, route config via ioctl and rtnetlink](#address-route-config-via-ioctl-and-rtnetlink)
-* [Reference of other kernel objects held by PvD](#reference-of-other-kernel-objects-held-by-pvd)
+* [PvD datastructure in kernel and the pointers it holds](#pvd-datastructure-in-kernel-and-the-pointers-it-holds)
 * [ifdef pre\-prossesor](#ifdef-pre-prossesor)
-
 # Usage of this patch
 
 The patch in this k415 branch is build upon Ubuntu 1804 LTS source tree (commit hash: 1221ffab3e8e42c17c6c54cf60e037abd76e199a), and should be applied to 4.15 kernels.
