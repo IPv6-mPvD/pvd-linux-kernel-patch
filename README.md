@@ -72,37 +72,11 @@ struct net {
 	int			ifindex;
 	unsigned int		dev_unreg_count;
 
-#ifdef	CONFIG_NETPVD
-	/*
-	 * Pvd related info
-	 * pvdindex : sequence number used to allocate a unique
-	 * number to each pvd
-	 *
-	 * pvd_free_slots[] is a linked list of indexes (each cell
-	 * contains the index of the next free pvd slot). first_free_pvd_ix
-	 * is the index of the first free slot (-1 means no more slots)
-	 *
-	 * pvd_used_slots[] is an array of pointer to active pvd
-	 * structures. The pvd structures are linked together via
-	 * a next field. first_used_pvd points to the head of the
-	 * pvd current list. The pvd_used_slots[] is used to perform
-	 * consistency checks on pvds, and not (for now) to list
-	 * them
-	 *
-	 * If a slot is not part of the pvd_free_slots[] list,
-	 * then its pvd_used_slots[] entry points to a pvd
-	 */
-	/* WQ: why linked list of pvds won't suffice? */
-	unsigned int		pvd_base_seq;	/* protected by rtnl_mutex */
+#ifdef	CONFIG_NETPVD	
+	struct list_head pvd_base_head;
+	struct hlist_head *pvd_name_head;
+	struct hlist_head *pvd_index_head;
 	u32			pvdindex;
-	void			*pvd_used_slots[MAXPVD];/* struct net_pvd *[] */
-	void			*first_used_pvd;	/* struct net_pvd * */
-	int			pvd_free_slots[MAXPVD];	/* array of indexes */
-	int			first_free_pvd_ix;	/* index */
-	unsigned int		pvd_unreg_count;
-
-	void			*pvd_cached_ra;
-
 	struct timer_list	pvd_timer;
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry	*proc_pvdd;
@@ -112,18 +86,30 @@ struct net {
     /* attributes omitted */
     }
 ```
+For PvDs within a net namespace, they are orgnized in one linked list and two hashtables.
+A PvD object can be located by either:
+1. traversing the _pvd_base_head_ linked-list;
+2. looking up in _pvd_name_head_ hash table given it's name;
+3. looking up in _pvd_index_head_ hash table given it's index;
 
-The current PvD-related data strucutre basically constructs a growable array with max size equal to MAXPVD.
-Everytime a PvD is added to or removed from a network namesapce, __pvd_used_slots__, __pvd_free_slots__, __first_free_pvd_ix__, __first_used_pvd__ need to be potentially updated.
-To really understand how they are manuipulated, __register_pvd()__ and __unregister_pvd()__ in _net/core/pvd.c_ would be the ultimate, self-explanatory places to look at.
-Apart from the non-intuitive (at least for me) approach, the main draw back is that since they are not built-in data structures such as linked-list, protecting them from concurrent access can rely on the RCU mechanism, instead RWLOCK is used.
+In correspondance, we add list_head and hlist_node to the __struct__ _net_pvd (defined in _include/net/pvd.h_):
+```c
+struct net_pvd {
+	/*
+	 * for explicit PvDs, its name is the FDQN
+	 * for implicit PvD, its name is router lla plus '%' plus receivng dev name
+	 */
+	char			name[PVDNAMSIZ];
+	int __percpu		*pcpu_refcnt;
+	u32			pvdindex;
+	int			notifications_blocked;
 
-A better practice would be to mimic how __net_device__ is managed in network namespace, more in __net/core/dev.c__.
-Fundementally, this implies (not exhaustive): 
-1. incorporate __list_head__ in __struct__ _net_pvd_ defined in _include/net/pvd.h_;
-2. change the way pvdindex is generated, this and following changes deal with _net/core/pvd.c_;
-3. change the way a pvd is added to and removed from the network namespace using rcu primitives;
-4. change the way a pvd is searched by it name, pvdindex, associating device, etc, using rcu primitives.
+	struct hlist_node	name_hlist;
+	struct hlist_node 	index_hlist;
+	struct list_head 	pvd_list;
+/* attributes omitted */
+    }
+```
 
 # Bind a thread/process/socket to a PvD
 The action of binding a thread/process/socket to a PvD dictates that the network traffic associated to the thread/process/socket is only allowed to use the routes, source addresses (managed in kernel) and DNS serverses (managed in userspace, say by [glibc](https://github.com/IPv6-mPvD/glibc.git)) attached to the PvD.
@@ -498,14 +484,18 @@ Last but not least, let's have a look at how a PvD object looks like in kernel.
 __struct__ _net_pvd_ is defined in _include/net/pvd.h_:
 ```c
 struct net_pvd {
-	struct net_pvd		*next;
-
+	/*
+	 * for explicit PvDs, its name is the FDQN
+	 * for implicit PvD, its name is router lla plus '%' plus receivng dev name
+	 */
 	char			name[PVDNAMSIZ];
-	struct hlist_node	name_hlist;
 	int __percpu		*pcpu_refcnt;
-	u32			pvdindex;	/* unique number */
-	int			_index;		/* index in net->pvd_used_slots */
+	u32			pvdindex;
 	int			notifications_blocked;
+
+	struct hlist_node	name_hlist;
+	struct hlist_node 	index_hlist;
+	struct list_head 	pvd_list;
 
 	/*
 	 * Attributes of the pvd
@@ -563,9 +553,8 @@ Only implicit PvD holds the device pointer, as its creation and existence partia
 Explicit PvD has its device pointer set to NULL. 
 The device pointer held by _net_pvd_ is only relased at the removal of a PvD. 
 This implies a removal of _net_device_, or other operation resulting a removal of _net_device_ say removal of a network namespace, might be blocked the presence of PvD that can only be removed via setscockopt call. 
+Therefore we implemented a device event handler for NETDEV_UNREGISTER and NETDEV_UNREGISTER_FINAL, that unregisters implicit PvDs received on the concered device.
 
-The ideal would be implemeting a device event handler for NETDEV_UNREGISTER and NETDEV_UNREGISTER_FINAL. 
-For example, upon the removal of a _net_device_, we remove automatically the PvDs relying on that interface as well. As a matter of fact, a tentative implementation (not used) is present in this patch __function__ _pvd_netdev_event()_ in _net/core/pvd.c_. However the registeration fails when initating the PvD module at boot phase for reasons currently unknown to the auther.
 
 # ifdef pre-prossesor
 Which codes should be enclosed in ifdef-pre-prossesor CONFIG_NETPVD?

@@ -351,10 +351,10 @@ index ddfbb591e2c5..6e146fbab4c1 100644
  #endif
  
 diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
-index 049008493faf..d2c5ba1d34d4 100644
+index 049008493faf..1995c041b7ae 100644
 --- a/include/net/net_namespace.h
 +++ b/include/net/net_namespace.h
-@@ -42,11 +42,15 @@ struct ctl_table_header;
+@@ -42,11 +42,17 @@ struct ctl_table_header;
  struct net_generic;
  struct sock;
  struct netns_ipvs;
@@ -365,47 +365,23 @@ index 049008493faf..d2c5ba1d34d4 100644
  #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
  
 +#ifdef	CONFIG_NETPVD
++#define NETPVD_HASHBITS    8
++#define NETPVD_HASHENTRIES (1 << NETPVD_HASHBITS)
 +#include <linux/pvd-user.h>
 +#endif
 +
  struct net {
  	refcount_t		passive;	/* To decided when the network
  						 * namespace should be freed.
-@@ -86,6 +90,43 @@ struct net {
+@@ -86,6 +92,17 @@ struct net {
  	int			ifindex;
  	unsigned int		dev_unreg_count;
  
-+#ifdef	CONFIG_NETPVD
-+	/*
-+	 * Pvd related info
-+	 * pvdindex : sequence number used to allocate a unique
-+	 * number to each pvd
-+	 *
-+	 * pvd_free_slots[] is a linked list of indexes (each cell
-+	 * contains the index of the next free pvd slot). first_free_pvd_ix
-+	 * is the index of the first free slot (-1 means no more slots)
-+	 *
-+	 * pvd_used_slots[] is an array of pointer to active pvd
-+	 * structures. The pvd structures are linked together via
-+	 * a next field. first_used_pvd points to the head of the
-+	 * pvd current list. The pvd_used_slots[] is used to perform
-+	 * consistency checks on pvds, and not (for now) to list
-+	 * them
-+	 *
-+	 * If a slot is not part of the pvd_free_slots[] list,
-+	 * then its pvd_used_slots[] entry points to a pvd
-+	 */
-+	/* WQ: why a single linked list of pvds won't suffice? */
-+	unsigned int		pvd_base_seq;	/* protected by rtnl_mutex */
++#ifdef	CONFIG_NETPVD	
++	struct list_head pvd_base_head;
++	struct hlist_head *pvd_name_head;
++	struct hlist_head *pvd_index_head;
 +	u32			pvdindex;
-+	void			*pvd_used_slots[MAXPVD];/* struct net_pvd *[] */
-+	void			*first_used_pvd;	/* struct net_pvd * */
-+	int			pvd_free_slots[MAXPVD];	/* array of indexes */
-+	int			first_free_pvd_ix;	/* index */
-+	unsigned int		pvd_unreg_count;
-+
-+	void			*pvd_cached_ra;
-+
 +	struct timer_list	pvd_timer;
 +#ifdef CONFIG_PROC_FS
 +	struct proc_dir_entry	*proc_pvdd;
@@ -417,10 +393,10 @@ index 049008493faf..d2c5ba1d34d4 100644
  
 diff --git a/include/net/pvd.h b/include/net/pvd.h
 new file mode 100644
-index 000000000000..0f73eb42f0f0
+index 000000000000..241dc2fc778e
 --- /dev/null
 +++ b/include/net/pvd.h
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,204 @@
 +
 +#ifndef	_NET_PVD_H
 +#define	_NET_PVD_H
@@ -435,28 +411,19 @@ index 000000000000..0f73eb42f0f0
 +
 +#include <linux/pvd-user.h>
 +
-+/*
-+ * In the net_pvd structure below, the pvdindex and
-+ * _index fields may be combined to form a full index
-+ * The full index, in turn, can be used to check a
-+ * pvd handle consistency/validity. Socket bound to
-+ * a set of pvds are referencing these pvds by full
-+ * indexes
-+ *
-+ * If name[0] == '\0' (ie, empty name), then the
-+ * pvd is an implicit PvD. In this case, the lla and
-+ * dev fields uniquely identify the PvD
-+ */
-+/* WQ: does net_pvd need a lock? */ 
 +struct net_pvd {
-+	struct net_pvd		*next;
-+
++	/*
++	 * for explicit PvDs, its name is the FDQN
++	 * for implicit PvD, its name is router lla plus '%' plus receivng dev name
++	 */
 +	char			name[PVDNAMSIZ];
-+	struct hlist_node	name_hlist;
 +	int __percpu		*pcpu_refcnt;
-+	u32			pvdindex;	/* unique number */
-+	int			_index;		/* index in net->pvd_used_slots */
++	u32			pvdindex;
 +	int			notifications_blocked;
++
++	struct hlist_node	name_hlist;
++	struct hlist_node 	index_hlist;
++	struct list_head 	pvd_list;
 +
 +	/*
 +	 * Attributes of the pvd
@@ -558,14 +525,12 @@ index 000000000000..0f73eb42f0f0
 +/*
 + * Net namespace inlines
 + */
-+static inline
-+struct net *pvd_net(const struct net_pvd *pvd)
++static inline struct net *pvd_net(const struct net_pvd *pvd)
 +{
 +	return read_pnet(&pvd->nd_net);
 +}
 +
-+static inline
-+void pvd_net_set(struct net_pvd *pvd, struct net *net)
++static inline void pvd_net_set(struct net_pvd *pvd, struct net *net)
 +{
 +	write_pnet(&pvd->nd_net, net);
 +}
@@ -601,9 +566,7 @@ index 000000000000..0f73eb42f0f0
 +				const char *pvdname,
 +				struct net_device *dev,
 +				struct in6_addr *lla);
-+extern int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex);
-+extern struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex);
-+extern int pvd_get_fullindex(struct net_pvd *pvd);
++extern int pvd_get_index(struct net_pvd *pvd);
 +extern struct net_pvd *pvd_get_by_index(struct net *net, int pvdindex);
 +extern int pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex);
 +extern int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd);
@@ -1054,15 +1017,15 @@ index 1fd0a9c88b1b..ab832e23bc77 100644
 \ No newline at end of file
 diff --git a/net/core/pvd.c b/net/core/pvd.c
 new file mode 100644
-index 000000000000..36a40782afb2
+index 000000000000..5ac0147106b9
 --- /dev/null
 +++ b/net/core/pvd.c
-@@ -0,0 +1,2537 @@
+@@ -0,0 +1,2444 @@
 +/*
-+ */
-+
-+/*
-+ * TODO : have a growable array of pvds in the struct net structure
++ * module for the management of PvDs
++ * 
++ * Authors: Thierry Danis
++ * 			Wenqin Shao
 + */
 +#include <net/net_namespace.h>
 +#include <linux/netdevice.h>
@@ -1106,9 +1069,6 @@ index 000000000000..36a40782afb2
 +#define	FORCE_NO_PVD_PTR	((void *) -1)
 +#define	INHERIT_PVD_PTR		((void *) 0)
 +
-+#define	MAXPVDINDEX	(1 << (32 - MAXPVDSHIFT))
-+#define	_TABIDX(f)	((f) & ((1 << MAXPVDSHIFT) - 1))
-+#define	_UNIQIDX(f)	(((f) >> MAXPVDSHIFT) & (MAXPVDINDEX - 1))
 +
 +struct nd_opt_rdnss_info {
 +	uint8_t nd_opt_rdnssi_type;
@@ -1128,15 +1088,8 @@ index 000000000000..36a40782afb2
 +	unsigned char nd_opt_dnssli_suffixes[];
 +};
 +
-+struct net_pvd *__pvd_get_by_name(
-+			struct net *net,
-+			const char *name,
-+			struct net_device *dev,
-+			struct in6_addr *lla);
-+
-+static seqcount_t pvd_rename_seq;
-+
 +static void pvd_check_lifetimes(struct timer_list *t);
++
 +static struct net_pvd	*__register_pvd(
 +				struct net *net,
 +				char *pvdname,
@@ -1144,28 +1097,54 @@ index 000000000000..36a40782afb2
 +				struct in6_addr *lla);
 +static void __unregister_pvd(struct net_pvd *pvd);
 +
++/*
++ * create and initialize a hash table with NETPVD_HASHENTRIES
++ */
++static struct hlist_head * __net_init netpvd_create_hash(void)
++{
++	int i;
++	struct hlist_head *hash;
++
++	hash = kmalloc(sizeof(*hash) * NETPVD_HASHENTRIES, GFP_KERNEL);
++	if (hash != NULL)
++		for (i = 0; i < NETPVD_HASHENTRIES; i++)
++			INIT_HLIST_HEAD(&hash[i]);
++
++	return hash;
++}
++
++
 +/* Initialize per network namespace state */
 +static int __net_init netpvd_init(struct net *net)
 +{
-+	int i;
-+
 +	timer_setup(&(net->pvd_timer), pvd_check_lifetimes, 0);
 +
 +	net->pvdindex = 0;
 +
-+	for (i = 0; i < MAXPVD; i++) {
-+		net->pvd_free_slots[i] = i == MAXPVD - 1 ? -1 : i + 1;
-+		net->pvd_used_slots[i] = NULL;
-+	}
-+	net->first_free_pvd_ix = 0;
-+	net->first_used_pvd = NULL;
++	INIT_LIST_HEAD(&net->pvd_base_head);
++
++	net->pvd_name_head = netpvd_create_hash();
++	if (net->pvd_name_head == NULL)
++		goto err_name;
++
++	net->pvd_index_head = netpvd_create_hash();
++	if (net->pvd_index_head == NULL)
++		goto err_idx;
 +
 +	return 0;
++
++err_idx:
++	kfree(net->dev_name_head);
++err_name:
++	return -ENOMEM;
 +}
 +
 +static void __net_exit netpvd_exit(struct net *net)
 +{
 +	del_timer_sync(&net->pvd_timer);
++	kfree(net->pvd_name_head);
++	kfree(net->pvd_index_head);
++	/* WQ: FIXEME!! What to do with net->pvd_base_head? what if the list is not empty? */
 +}
 +
 +static struct pernet_operations __net_initdata netpvd_net_ops = {
@@ -1174,23 +1153,19 @@ index 000000000000..36a40782afb2
 +};
 +
 +/*
-+ * The @first_used_pvd list is protected by @pvd_base_lock and the rtnl
++ * The @pvd_base_head list is protected by @pvd_base_lock and the rtnl
 + * semaphore.
 + *
 + * Pure readers hold pvd_base_lock for reading, or rcu_read_lock()
 + *
 + * Writers must hold the rtnl semaphore while they loop through the
-+ * first_used_pvd list, and hold pvd_base_lock for writing when they do the
++ * pvd_base_head list, and hold pvd_base_lock for writing when they do the
 + * actual updates.  This allows pure readers to access the list even
 + * while a writer is preparing to update it.
 + *
 + * To put it another way, pvd_base_lock is held for writing only to
 + * protect against pure readers; the rtnl semaphore provides the
 + * protection against other writers.
-+ *
-+ * See, for example usages, register_netdevice() and
-+ * unregister_netdevice(), which must be called with the rtnl
-+ * semaphore held.
 + */
 +DEFINE_RWLOCK(pvd_base_lock);
 +EXPORT_SYMBOL(pvd_base_lock);
@@ -1199,7 +1174,7 @@ index 000000000000..36a40782afb2
 +
 +static int pvd_attrs_seq_show(struct seq_file *seq, void *v)
 +{
-+	struct net_pvd *pvd = (struct net_pvd *) seq->private;
++	struct net_pvd *pvd = (struct net_pvd *) seq->private; 
 +	char sAddr[64];
 +
 +	read_lock_bh(&pvd_base_lock);
@@ -1212,7 +1187,7 @@ index 000000000000..36a40782afb2
 +		pvd->h_flag ? "true" : "false",
 +		pvd->l_flag ? "true" : "false",
 +		pvd->a_flag ? "true" : "false",
-+		(unsigned long) pvd_get_fullindex(pvd),
++		(unsigned long) pvd_get_index(pvd),
 +		addr6tostr(pvd->lla.s6_addr, sAddr),
 +		pvd->dev ? pvd->dev->name : "<nodev>");
 +
@@ -1497,11 +1472,9 @@ index 000000000000..36a40782afb2
 +	struct net_pvd *pvd;
 +	char sAddr[64];
 +
-+    /* WQ: why rtnl mutex, read lock shall suffice right? */
-+	rtnl_lock();
-+	read_lock_bh(&pvd_base_lock);
++	rcu_read_lock();
 +
-+	for (pvd = net->first_used_pvd; pvd; pvd = pvd->next) {
++	list_for_each_entry_rcu(pvd, &net->pvd_base_head, pvd_list){
 +		seq_printf(
 +			seq,
 +			"name=%s seq=%d h=%s l=%s a=%s index=%lu lla=%s dev=%s\n",
@@ -1510,13 +1483,12 @@ index 000000000000..36a40782afb2
 +			pvd->h_flag ? "true" : "false",
 +			pvd->l_flag ? "true" : "false",
 +			pvd->a_flag ? "true" : "false",
-+			(unsigned long) pvd_get_fullindex(pvd),
++			(unsigned long) pvd_get_index(pvd),
 +			addr6tostr(pvd->lla.s6_addr, sAddr),
 +			pvd->dev ? pvd->dev->name : "<nodev>");
 +	}
 +
-+	read_unlock_bh(&pvd_base_lock);
-+	rtnl_unlock();
++	rcu_read_unlock();
 +
 +	return 0;
 +}
@@ -1688,8 +1660,12 @@ index 000000000000..36a40782afb2
 +
 +EXPORT_SYMBOL(dnssl_rtnl_notify);
 +
++
 +/*
-+ * pvd_migrate_route : some routes are created via RA
++ * pvd_migrate_route : migrate a route from its current pvd to a new pvd
++ * Its current pvd might be NULL
++ * 
++ * some routes are created via RA
 + * or manually associated to a pvd. We want to be able to find the pvd
 + * associated to the route and, conversely, find all routes attached
 + * to a pvd
@@ -1697,25 +1673,10 @@ index 000000000000..36a40782afb2
 + * updates the different links between pvds and ruotes
 + * A route associated to no pvd has its ->pvd field == NULL
 + *
-+ * A reference is hold on the route on success as well as on the
-+ * pvd
-+ *
-+ * FIXME : check if rtnl_lock() must be taken here !
-+ */
-+/*
-+ * pvd_migrate_route : migrate a route from its current pvd to a new pvd
-+ * Its current pvd might be NULL
++ * rt holds pvd reference, yet not the other way around
 + *
 + * We want to ignore routes with the DST_NOCOUNT flag
 + */
-+int pvd_migrate_route(struct net_pvd *newpvd, struct rt6_info *rt) {
-+	int rc = 0;
-+	rtnl_lock();
-+	rc = pvd_migrate_route_rtnl(newpvd, rt);
-+	rtnl_unlock();
-+	return rc;
-+}
-+EXPORT_SYMBOL(pvd_migrate_route);
 +
 +/* to be called within rtnl lock */
 +int	pvd_migrate_route_rtnl(
@@ -1728,7 +1689,7 @@ index 000000000000..36a40782afb2
 +	int		rc = 0;
 +
 +	if (rt == NULL) {
-+		return(0);
++		return 0;
 +	}
 +
 +	oldpvd = rt->rt6i_pvd;
@@ -1740,7 +1701,7 @@ index 000000000000..36a40782afb2
 +		rt->dst.dev ? rt->dst.dev->name : "");
 +
 +	if (newpvd == oldpvd) {
-+		return(0);
++		return 0;
 +	}
 +
 +	ASSERT_RTNL();
@@ -1753,7 +1714,7 @@ index 000000000000..36a40782afb2
 +	}
 +
 +	write_lock_bh(&pvd_base_lock);
-+
++	/* remove the rt from old pvd */
 +	for (i = 0; i < oldpvd->nroutes; i++) {
 +		if (oldpvd->routes[i] == rt) {
 +			/*
@@ -1808,7 +1769,7 @@ index 000000000000..36a40782afb2
 +	rt->rt6i_pvd = pvd_hold(newpvd);
 +
 +Exit :
-+/* WQ: if commented, where do we hold/put the reference for rt in case of add and delete? So we don't? */
++	/* we don't hold dst reference in pvd */
 +#if	0
 +	if (deltaCount == -1) {
 +		dst_release(&rt->dst);
@@ -1844,8 +1805,20 @@ index 000000000000..36a40782afb2
 +}
 +EXPORT_SYMBOL(pvd_migrate_route_rtnl);
 +
++int pvd_migrate_route(struct net_pvd *newpvd, struct rt6_info *rt) {
++	int rc = 0;
++	rtnl_lock();
++	rc = pvd_migrate_route_rtnl(newpvd, rt);
++	rtnl_unlock();
++	return rc;
++}
++EXPORT_SYMBOL(pvd_migrate_route);
++
 +/*
-+ * pvd_migrate_addr : some addresses are created from prefixes (via RA)
++ * pvd_migrate_addr : migrate an address from its current pvd to a new pvd
++ * Its current pvd might be NULL
++ * 
++ * some addresses are created from prefixes (via RA)
 + * or manually associated to a pvd. We want to be able to find the pvd
 + * associated to the address and, conversely, find all addresses attached
 + * to a pvd
@@ -1853,33 +1826,10 @@ index 000000000000..36a40782afb2
 + * updates the different links between pvds and addresses
 + * An address associated to no pvd has its ->pvd field == NULL
 + *
-+ * A reference is hold on the address on success as well as on the
-+ * pvd
-+ *
-+ * FIXME : check if rtnl_lock() must be taken here ! WARNING :
-+ * it seems that we are creating issues when removing an address
-+ * and calling pvd_migrate_addr to remove it from its pvd =>
-+ * rtnl_lock must certainly already be taken somewhere in the
-+ * callers chain => we are using rcu_read_lock()/rcu_read_unlock()
-+ * instead
-+ */
-+/* WQ:
++ *  WQ:
 + * rtnl_lock taken by inet6_addr_modify in addrconf.c
 + * not every call to pvd_migrate_addr has rtnl lock taken
 + */
-+/*
-+ * pvd_migrate_addr : migrate an address from its current pvd to a new pvd
-+ * Its current pvd might be NULL
-+ */
-+int pvd_migrate_addr(struct net_pvd *newpvd, struct inet6_ifaddr *ifa) {
-+	int rc = 0;
-+	rtnl_lock();
-+	rc = pvd_migrate_addr_rtnl(newpvd, ifa);
-+	rtnl_unlock();
-+	return rc;
-+}
-+EXPORT_SYMBOL(pvd_migrate_addr);
-+
 +
 +int	pvd_migrate_addr_rtnl(
 +		struct net_pvd *newpvd,
@@ -1891,7 +1841,7 @@ index 000000000000..36a40782afb2
 +	int		rc = 0;
 +
 +	if (ifa == NULL) {
-+		return(0);
++		return 0;
 +	}
 +
 +	oldpvd = ifa->pvd;
@@ -1902,7 +1852,7 @@ index 000000000000..36a40782afb2
 +		ifa);
 +
 +	if (newpvd == oldpvd) {
-+		return(0);
++		return 0;
 +	}
 +
 +	ASSERT_RTNL();
@@ -1982,6 +1932,15 @@ index 000000000000..36a40782afb2
 +}
 +EXPORT_SYMBOL(pvd_migrate_addr_rtnl);
 +
++int pvd_migrate_addr(struct net_pvd *newpvd, struct inet6_ifaddr *ifa) {
++	int rc = 0;
++	rtnl_lock();
++	rc = pvd_migrate_addr_rtnl(newpvd, ifa);
++	rtnl_unlock();
++	return rc;
++}
++EXPORT_SYMBOL(pvd_migrate_addr);
++
 +/*
 + * pvd_register_rdnss : given a RDNSS option, registers it. This means
 + * checking if each address it defines is already registered. We also
@@ -2040,9 +1999,7 @@ index 000000000000..36a40782afb2
 +	struct nd_opt_rdnss_info *rdnssi = (struct nd_opt_rdnss_info *) rdnss_opt;
 +	int count = rdnssi->nd_opt_rdnssi_len;
 +
-+	/* WQ: pvd_base_lock to to proctect pvd strucutres in corresponding net namespace
-+	here we only have to protect the a single pvd, maybe a lock for each pvd? */
-+	/* WQ: one single call path from ipv6/ndisc.c; seems no need for rtnl_lock protection? */
++	rtnl_lock();
 +	write_lock_bh(&pvd_base_lock);
 +
 +	switch (count) {
@@ -2067,8 +2024,8 @@ index 000000000000..36a40782afb2
 +	}
 +
 +	write_unlock_bh(&pvd_base_lock);
++	rtnl_unlock();
 +}
-+
 +EXPORT_SYMBOL(pvd_register_rdnss);
 +
 +/*
@@ -2135,7 +2092,7 @@ index 000000000000..36a40782afb2
 +
 +	suffix[0] = '\0';
 +
-+	/* WQ: same comment as for rdnss */
++	rtnl_lock();
 +	write_lock_bh(&pvd_base_lock);
 +
 +	for (offset = 0; offset < offset_max;) {
@@ -2175,8 +2132,8 @@ index 000000000000..36a40782afb2
 +	}
 +
 +	write_unlock_bh(&pvd_base_lock);
++	rtnl_unlock();
 +}
-+
 +EXPORT_SYMBOL(pvd_register_dnssl);
 +
 +/*
@@ -2186,6 +2143,10 @@ index 000000000000..36a40782afb2
 + *
 + * The returned pvd gets one reference. The function returns 0 on success,
 + * a negative value on error
++ * 
++ * scope -1 means the check goes through all level to reach a final answer
++ * otherwise the check stops at the specified level
++ * if the bound happens is enforced on a different level, it returns 0 and a pvd pointing to NULL
 + *
 + * Priority checking :
 + * 1) socket level first (can be forced to not use any pvd)
@@ -2207,11 +2168,11 @@ index 000000000000..36a40782afb2
 +
 +socket_scope :
 +	/*
-+	 * Time to resolve the socket bound pvd (currently full index) to pvd pointer
++	 * Time to resolve the socket bound pvd (pvdindex) to pvd pointer
 +	 */
 +	if (sk->sk_pvd_bind_type == PVD_BIND_INHERIT) {
 +		if (scope == -1) {
-+			goto thread_scope;
++			goto thread_scope; /* fall through */
 +		}
 +		return 0;
 +	}
@@ -2220,11 +2181,7 @@ index 000000000000..36a40782afb2
 +		return 0;
 +	}
 +	if (sk->sk_pvd_bind_type == PVD_BIND_ONEPVD) {
-+		read_lock_bh(&pvd_base_lock);
-+		pvd_hold(*pvd = __pvd_get_by_fullindex(
-+					sock_net(sk),
-+					sk->sk_bound_pvd));
-+		read_unlock_bh(&pvd_base_lock);
++		*pvd = pvd_get_by_index(sock_net(sk), sk->sk_bound_pvd);
 +		return *pvd == NULL ? -ENETUNREACH : 0;
 +	}
 +
@@ -2232,38 +2189,28 @@ index 000000000000..36a40782afb2
 +	/*
 +	 * Check at the current thread/process level
 +	 */
-+	/* WQ: why protecting that much code. Should be safe shrink to pvd_get_by_name call */
-+	read_lock_bh(&pvd_base_lock);
++	/* WQ: this if seems unnecessary */
 +	if (scope == -1 || scope == PVD_BIND_SCOPE_THREAD) {
 +		if (p->bound_pvd == INHERIT_PVD_PTR) {
 +			if (scope == PVD_BIND_SCOPE_THREAD) {
-+				goto rcu_out;
++				return 0; /* scope mismatch */
 +			}
-+			goto process_scope_rcu;
++			goto process_scope; /* -1 scope fall through */ 
 +		}
 +		if (p->bound_pvd == FORCE_NO_PVD_PTR) {
-+			goto rcu_out;
++			return 0;
 +		}
 +		/*
 +		 * A pvdname has been specified -> convert it to a
 +		 * pvd. In this case (success or failure), we don't
 +		 * want to loookup at the parent's level
 +		 */
-+		pvd_hold(*pvd = __pvd_get_by_name(
-+					sock_net(sk),
-+					p->bound_pvd,
-+					NULL,	/* dev */
-+					NULL));	/* lla */
-+		if (*pvd == NULL) {
-+			ret = -ENETUNREACH;
-+		}
-+		goto rcu_out;
++
++		*pvd = pvd_get_by_name(sock_net(sk), p->bound_pvd, NULL /* dev */, NULL /* lla */);
++		return *pvd == NULL ? -ENETUNREACH : 0;
 +	}
 +
 +process_scope :
-+	read_lock_bh(&pvd_base_lock);
-+
-+process_scope_rcu :
 +	/*
 +	 * Find the parent
 +	 */
@@ -2273,36 +2220,21 @@ index 000000000000..36a40782afb2
 +		p = p->real_parent;
 +	}
 +
-+	if (p == NULL) {
-+		goto rcu_out;
-+	}
++	if (p == NULL)
++		return 0;
 +
 +	if (p->bound_pvd == FORCE_NO_PVD_PTR ||
-+	    p->bound_pvd == INHERIT_PVD_PTR) {
-+		goto rcu_out;
-+	}
++	    p->bound_pvd == INHERIT_PVD_PTR)
++		return 0;
 +
-+	pvd_hold(*pvd = __pvd_get_by_name(
-+				sock_net(sk),
-+				p->bound_pvd,
-+				NULL,	/* dev */
-+				NULL));	/* lla */
-+	if (*pvd == NULL) {
-+		ret = -ENETUNREACH;
-+	}
-+	goto rcu_out;
-+
-+rcu_out :
-+	read_unlock_bh(&pvd_base_lock);
-+
-+	return ret;
++	*pvd = pvd_get_by_name(sock_net(sk), p->bound_pvd, NULL, NULL);
++	return *pvd == NULL ? -ENETUNREACH : 0;
 +}
 +
 +int pvd_getboundpvd(struct sock *sk, struct net_pvd **pvd)
 +{
 +	return _pvd_getboundpvd(sk, pvd, -1);
 +}
-+
 +EXPORT_SYMBOL(pvd_getboundpvd);
 +
 +/*
@@ -2378,7 +2310,7 @@ index 000000000000..36a40782afb2
 +	}
 +
 +	/* WQ: should be safe shrink the protection to pvd_get_by_name call */
-+	read_lock_bh(&pvd_base_lock);
++	rcu_read_lock();
 +
 +	ret = 0;
 +
@@ -2439,14 +2371,14 @@ index 000000000000..36a40782afb2
 +			ret = -ENETUNREACH;
 +		}
 +		else {
-+			sk->sk_bound_pvd = pvd_get_fullindex(pvd);
++			sk->sk_bound_pvd = pvd_get_index(pvd);
 +		}
 +	}
 +	sk_dst_reset(sk);
 +	release_sock(sk);
 +
 +rcu_out :
-+	read_unlock_bh(&pvd_base_lock);
++	rcu_read_unlock();
 +
 +	return ret;
 +}
@@ -2512,6 +2444,7 @@ index 000000000000..36a40782afb2
 + * the PvD) and sock_getpvdattr (returns the attributes for one given
 + * PvD)
 + */
++/* WQ: read lock has to be taken when calling _sock_getpvdattr */
 +static int _sock_getpvdattr(
 +		struct net_pvd *pvd, 
 +		struct net_pvd_attribute *pvdattr)
@@ -2536,7 +2469,7 @@ index 000000000000..36a40782afb2
 +	put_user(pvd->h_flag, &pvdattr->h_flag);
 +	put_user(pvd->l_flag, &pvdattr->l_flag);
 +	put_user(pvd->a_flag, &pvdattr->a_flag);  // introduced in draft-01
-+	put_user(pvd_get_fullindex(pvd), &pvdattr->index);
++	put_user(pvd_get_index(pvd), &pvdattr->index);
 +	put_user(pvd->implicit_flag, &pvdattr->implicit_flag);
 +
 +	/*
@@ -2675,10 +2608,9 @@ index 000000000000..36a40782afb2
 +	}
 +
 +	rtnl_lock();
-+
-+	for (pvd = net->first_used_pvd;
-+	     pvd != NULL && strcmp(pvd->name, cpvd.pvdname) != 0;
-+	     pvd = pvd->next);
++	rcu_read_lock();
++	pvd = pvd_get_by_name_rcu(net, cpvd.pvdname, NULL, NULL); /* WQ: pvd ref not held */
++	rcu_read_unlock();
 +
 +	ret = 0;
 +
@@ -2701,10 +2633,6 @@ index 000000000000..36a40782afb2
 +		pvdJustCreated = true;
 +	}
 +
-+	/* 
-+	 * WQ: list del rcu for unregister pvd
-+	 * in __unregister_pvd, remove_from_net is called, where write lock is applied 
-+	 * */
 +	if ((cpvd.flag & PVD_ATTR_DEPRECATED) != 0 && cpvd.deprecated == 1) {
 +		__unregister_pvd(pvd);
 +		goto out;
@@ -2773,17 +2701,12 @@ index 000000000000..36a40782afb2
 +		return -EINVAL;	/* empty name */
 +	}
 +
-+	/* WQ: read lock should suffice, see no need for rtnl_lock */
-+	// rtnl_lock();
++	rcu_read_lock();
++	pvd = pvd_get_by_name_rcu(net, pvdname, NULL, NULL); /* WQ: pvd ref not held */
++	rcu_read_unlock();
++
 +	read_lock_bh(&pvd_base_lock);
-+
-+	for (pvd = net->first_used_pvd;
-+	     pvd != NULL && strcmp(pvd->name, pvdname) != 0;
-+	     pvd = pvd->next);
-+
 +	ret = pvd ? _sock_getpvdattr(pvd, pva.pvdattr) : -ENOENT;
-+
-+	// rtnl_unlock();
 +	read_unlock_bh(&pvd_base_lock);
 +
 +	return ret;
@@ -2826,13 +2749,8 @@ index 000000000000..36a40782afb2
 +		return ret;
 +	}
 +
-+	/* WQ: why mutex, a read lock shall suffice  */
-+	//rtnl_lock();
-+	read_lock_bh(&pvd_base_lock);
-+
-+	for (npvds = 0, pvd = net->first_used_pvd;
-+	     pvd != NULL && npvds < unpvds && npvds < MAXPVD;
-+	     pvd = pvd->next, npvds++) {
++	rcu_read_lock();
++	list_for_each_entry_rcu(pvd, &net->pvd_base_head, pvd_list) {
 +		if ((l = strlen(pvd->name)) > PVDNAMSIZ -1) {
 +			l = PVDNAMSIZ - 1;
 +		}
@@ -2840,6 +2758,9 @@ index 000000000000..36a40782afb2
 +			ret = -EFAULT;
 +			goto out;
 +		}
++		npvds ++;
++		if (npvds >= unpvds || npvds >= MAXPVD)
++			break;
 +	}
 +
 +	put_user(npvds, &pvl->npvd);
@@ -2847,108 +2768,73 @@ index 000000000000..36a40782afb2
 +	ret = 0;
 +
 +out :
-+	// rtnl_unlock();
-+	read_unlock_bh(&pvd_base_lock);
++	rcu_read_unlock();
 +
 +	return ret;
 +}
-+
 +EXPORT_SYMBOL(sock_getpvdlist);
++
++/* return the hlist_head/bucket according to pvd name hash value */
++static inline struct hlist_head *pvd_name_hash(struct net *net, const char *name)
++{
++	unsigned int hash = full_name_hash(net, name, strnlen(name, PVDNAMSIZ));
++	/*WQ: note that NETPVD_HASHBITS is set to 32*/
++	return &net->pvd_name_head[hash_32(hash, NETPVD_HASHBITS)];
++}
++
++/* return the hlist_head/bucket according to the pvdindex value */
++static inline struct hlist_head *pvd_index_hash(struct net *net, u32 pvdindex)
++{
++	return &net->pvd_index_head[pvdindex & (NETPVD_HASHENTRIES - 1)];
++}
 +
 +/*
 + * Add a PvD in the per net/array. rtnl must be taken
-+ * We have already checked that there was at least
-+ * one free slot. On 1st PvD insertion, we arm a timer
-+ * that will fire every second
 + */
 +static void add_pvd_in_net(struct net_pvd *pvd)
 +{
 +	struct net *net = pvd_net(pvd);
-+	int next_free;
 +
 +	ASSERT_RTNL();
 +
-+	/* WQ: mixed use of RWLOCK and rcu, rcu for linked list, RWLOCK or seqlock for arrarys */
 +	write_lock_bh(&pvd_base_lock);
 +
-+	if (net->first_used_pvd != NULL) {
++	/* used to be if (net->first_used_pvd != NULL) {...} 
++	 * WQ: arm the timer when we are about to add the first pvd
++	 * i.e. when the pvd_base_head is still empty 
++	 */
++	if (list_empty(&net->pvd_base_head)){
 +		mod_timer(&net->pvd_timer, jiffies + HZ);
 +	}
 +
-+	next_free = net->pvd_free_slots[net->first_free_pvd_ix];
-+
-+	pvd->next = net->first_used_pvd;
-+	pvd->_index = net->first_free_pvd_ix;	/* link back */
-+
-+	net->pvd_used_slots[net->first_free_pvd_ix] = net->first_used_pvd = (void *) pvd;
-+
-+	net->first_free_pvd_ix = next_free;
++	list_add_tail_rcu(&pvd->pvd_list, &net->pvd_base_head);
++	hlist_add_head_rcu(&pvd->name_hlist, pvd_name_hash(net, pvd->name));
++	hlist_add_head_rcu(&pvd->index_hlist, pvd_index_hash(net, pvd->pvdindex));
 +
 +	write_unlock_bh(&pvd_base_lock);
 +}
 +
-+/* Remove a PvD from the per net/array. rtnl must be taken */
++/* Remove a PvD from the per net pvd_base_head. rtnl must be taken */
 +void remove_pvd_from_net(struct net_pvd *pvd)
 +{
-+	struct net *net = pvd_net(pvd);
-+	struct net_pvd *_pvd, *prev;
-+
 +	ASSERT_RTNL();
-+
-+	/*
-+	 * reset the entry from the per-net pvds array
-+	 * and update the first_free/first_used fields
-+	 */
 +	write_lock_bh(&pvd_base_lock);
-+
-+	if (pvd->_index < 0 || pvd->_index >= MAXPVD) {
-+		// Corruption
-+		goto Exit;
-+	}
-+
-+	for (_pvd = net->first_used_pvd, prev = NULL;
-+	     _pvd != NULL && _pvd != pvd;
-+	     prev = _pvd, _pvd = _pvd->next);
-+
-+	if (_pvd == NULL) {
-+		// Not found in the list : internal error probably
-+		goto Exit;
-+	}
-+	if (prev != NULL) {
-+		prev->next = _pvd->next;
-+	}
-+	else {
-+		net->first_used_pvd = _pvd->next;
-+	}
-+
-+	net->pvd_free_slots[pvd->_index] = net->first_free_pvd_ix;
-+	net->first_free_pvd_ix = pvd->_index;
-+
-+	net->pvd_used_slots[pvd->_index] = NULL;
-+	pvd->_index = -1;
-+
-+Exit :
++	/* WQ: what happens if list_del_rcu a node not in the linkedlist ?*/
++	list_del_rcu(&pvd->pvd_list);
++	hlist_del_rcu(&pvd->name_hlist);
++	hlist_del_rcu(&pvd->index_hlist);
 +	write_unlock_bh(&pvd_base_lock);
 +}
 +
-+/**
-+ * 	pvd_get_fullindex	- return the full index of a pvd
-+ * 	@pvd : a pvd (retrieved by name or else)
-+ *
-+ * 	Given the pvd, build the full index that can be used
-+ * 	for future safe retrieval of the pvd
-+ * 	The full index combines an index (in the net->pvd_used_slots
-+ * 	array) and the uniquely generated pvdindex
-+ *
-+ * 	The rntl semaphore mut be taken
++/*
++ * caller to this function shall already hold the reference to pvd
++ * therefore no need to rcu_read_lock and rcu_deference
 + */
-+/* WQ: why rntl_lock, there is not update happening here */
-+
-+int pvd_get_fullindex(struct net_pvd *pvd)
++int pvd_get_index(struct net_pvd *pvd)
 +{
-+	return pvd->_index | (pvd->pvdindex << MAXPVDSHIFT);
++	return pvd->pvdindex;
 +}
-+EXPORT_SYMBOL(pvd_get_fullindex);
++EXPORT_SYMBOL(pvd_get_index);
 +
 +/**
 + *	__pvd_get_by_name	- find a pvd by its name
@@ -2959,48 +2845,49 @@ index 000000000000..36a40782afb2
 + *
 + *	Find a pvd by name. Must be called under RTNL semaphore
 + *	or @pvd_base_lock. If the name is found a pointer to the pvd
-+ *	is returned. If the name is not found then %NULL is returned. The
++ *	is returned. If the name is not found then NULL is returned. The
 + *	reference counters are not incremented so the caller must be
 + *	careful with locks.
 + */
-+/* WQ: again see no reason for rtnl_lock, as only read is involved */
++
 +struct net_pvd *__pvd_get_by_name(
 +			struct net *net,
 +			const char *name,
 +			struct net_device *dev,
 +			struct in6_addr *lla)
 +{
-+	struct in6_addr NullAddr;
-+	struct net_pvd *pvd = net->first_used_pvd;
-+
++	struct net_pvd *pvd;
++	
 +	/*
 +	 * If the name is specified, simple string comparison
 +	 * pvd->name always contains something (even for implicit
 +	 * pvd)
 +	 */
 +	if (name != NULL) {
-+		for (pvd = net->first_used_pvd; pvd != NULL; pvd = pvd->next) {
-+			if (strncmp(pvd->name, name, PVDNAMSIZ) == 0) {
++		struct hlist_head *head = pvd_name_hash(net, name);
++		hlist_for_each_entry(pvd, head, name_hlist)
++			if (!strncmp(pvd->name, name, PVDNAMSIZ))
 +				return pvd;
-+			}
-+		}
 +		return NULL;
 +	}
 +
 +	/*
-+	 * Name == NULL. Consider the lla and the interface
++	 * Name == NULL. Consider the lla and the interface; 
++	 * this is the case with implicit PvD
++	 * as a matter of fact, implicit PvD has as well a name
++	 * lla%dev_name, see in __register_pvd
 +	 */
++	struct in6_addr NullAddr;
 +	memset(&NullAddr, 0, sizeof(NullAddr));
 +
 +	if (lla == NULL) {
 +		lla = &NullAddr;
 +	}
-+
-+	for (pvd = net->first_used_pvd; pvd != NULL; pvd = pvd->next) {
-+		if (dev != NULL && pvd->dev == NULL) {
-+			continue;
++	list_for_each_entry(pvd, &net->pvd_base_head, pvd_list) {
++	 	if (dev != NULL && pvd->dev == NULL) {
++	 		continue;
 +		}
-+		if (dev == NULL && pvd->dev != NULL) {
++	 	if (dev == NULL && pvd->dev != NULL) {
 +			continue;
 +		}
 +		if (pvd->dev == dev &&
@@ -3019,18 +2906,48 @@ index 000000000000..36a40782afb2
 + *
 + *	Find an pvd by name.
 + *	If the name is found a pointer to the pvd is returned.
-+ * 	If the name is not found then %NULL is returned.
++ * 	If the name is not found then NULL is returned.
 + *	The reference counters are not incremented so the caller must be
-+ *	careful with locks. The caller must hold RCU lock.
++ *	careful with locks. The caller must hold RCU read lock.
 + */
-+
 +struct net_pvd *pvd_get_by_name_rcu(
 +			struct net *net,
 +			const char *name,
 +			struct net_device *dev,
 +			struct in6_addr *lla)
 +{
-+	return __pvd_get_by_name(net, name, dev, lla);
++	struct net_pvd *pvd;
++	if (name != NULL) {
++		struct hlist_head *head = pvd_name_hash(net, name);
++		hlist_for_each_entry_rcu(pvd, head, name_hlist)
++			if (!strncmp(pvd->name, name, PVDNAMSIZ))
++				return pvd;
++		return NULL;
++	}
++
++	/*
++	 * implicit PvD, search with lla and dev
++	 */
++	struct in6_addr NullAddr;
++	memset(&NullAddr, 0, sizeof(NullAddr));
++
++	if (lla == NULL) {
++		lla = &NullAddr;
++	}
++
++	list_for_each_entry_rcu(pvd, &net->pvd_base_head, pvd_list) {
++	 	if (dev != NULL && pvd->dev == NULL) {
++	 		continue;
++		}
++	 	if (dev == NULL && pvd->dev != NULL) {
++			continue;
++		}
++		if (pvd->dev == dev &&
++		    memcmp(lla, &pvd->lla, sizeof(*lla)) == 0) {
++			return pvd;
++		}
++	}
++	return NULL;
 +}
 +EXPORT_SYMBOL(pvd_get_by_name_rcu);
 +
@@ -3042,10 +2959,9 @@ index 000000000000..36a40782afb2
 + *	Find an pvd by name. This can be called from any
 + *	context and does its own locking. The returned handle has
 + *	the usage count incremented and the caller must use pvd_put() to
-+ *	release it when it is no longer needed. %NULL is returned if no
++ *	release it when it is no longer needed. NULL is returned if no
 + *	matching pvd is found.
 + */
-+/* WQ: meaningless to hold rcu here, as net pvd structures are protected by RWLOCK... */
 +struct net_pvd *pvd_get_by_name(
 +			struct net *net,
 +			const char *name,
@@ -3054,49 +2970,15 @@ index 000000000000..36a40782afb2
 +{
 +	struct net_pvd *pvd;
 +
-+	read_lock_bh(&pvd_base_lock);
++	rcu_read_lock();
 +	pvd = pvd_get_by_name_rcu(net, name, dev, lla);
 +	if (pvd)
 +		pvd_hold(pvd);
-+	read_unlock_bh(&pvd_base_lock);
++	rcu_read_unlock();
 +	return pvd;
 +}
 +EXPORT_SYMBOL(pvd_get_by_name);
 +
-+/**
-+ *	__pvd_get_by_fullindex - find a pvd by its full pvdindex
-+ *	@net: the applicable net namespace
-+ *	@fullindex: index of pvd
-+ *
-+ *	Search for a pvd given a fullindex. A full index is built from
-+ *	2 part : one which is an index in the net->pvds array and a part
-+ *	which is a unique allocated number. Such a full index must have
-+ *	been grabbed earlier, given a pvd name for example.
-+ *	
-+ *	Returns %NULL if the pvd is not found or not valid or a pointer to
-+ *	the pvd. The pvd has not had its reference counter increased so the
-+ *	caller must be careful about locking. The caller must hold either
-+ *	the RTNL semaphore or @pvd_base_lock.
-+ */
-+
-+struct net_pvd *__pvd_get_by_fullindex(struct net *net, int fullindex)
-+{
-+	struct net_pvd *pvd;
-+	int _index = _TABIDX(fullindex);
-+	u32 pvdindex = _UNIQIDX(fullindex);
-+
-+	if (_index < 0 || _index >= MAXPVD) {	// >= MAXPVD is not possible
-+		return NULL;
-+	}
-+	if ((pvd = net->pvd_used_slots[_index]) == NULL) {
-+		return NULL;
-+	}
-+	if (pvd->pvdindex != pvdindex && pvd->_index != _index) {
-+		return NULL;
-+	}
-+	return pvd;
-+}
-+EXPORT_SYMBOL(__pvd_get_by_fullindex);
 +
 +/**
 + *	__pvd_get_by_index - find a pvd by its pvdindex
@@ -3112,12 +2994,14 @@ index 000000000000..36a40782afb2
 +
 +struct net_pvd *__pvd_get_by_index(struct net *net, u32 pvdindex)
 +{
-+	struct net_pvd *pvd = net->first_used_pvd;
++	struct net_pvd *pvd;
++	struct hlist_head *head = pvd_index_hash(net, pvdindex);
 +
-+	while (pvd != NULL && pvd->pvdindex != pvdindex) {
-+		pvd = pvd->next;
-+	}
-+	return pvd;
++	hlist_for_each_entry(pvd, head, index_hlist)
++		if (pvd->pvdindex == pvdindex)
++			return pvd;
++
++	return NULL;
 +}
 +EXPORT_SYMBOL(__pvd_get_by_index);
 +
@@ -3134,7 +3018,14 @@ index 000000000000..36a40782afb2
 +
 +struct net_pvd *pvd_get_by_index_rcu(struct net *net, u32 pvdindex)
 +{
-+	return __pvd_get_by_index(net, pvdindex);
++	struct net_pvd *pvd;
++	struct hlist_head *head = pvd_index_hash(net, pvdindex);
++
++	hlist_for_each_entry_rcu(pvd, head, index_hlist)
++		if (pvd->pvdindex == pvdindex)
++			return pvd;
++
++	return NULL;
 +}
 +EXPORT_SYMBOL(pvd_get_by_index_rcu);
 +
@@ -3153,49 +3044,14 @@ index 000000000000..36a40782afb2
 +{
 +	struct net_pvd *pvd;
 +
-+	read_lock_bh(&pvd_base_lock);
++	rcu_read_lock();
 +	pvd = pvd_get_by_index_rcu(net, pvdindex);
 +	if (pvd)
 +		pvd_hold(pvd);
-+	read_unlock_bh(&pvd_base_lock);
++	rcu_read_unlock();
 +	return pvd;
 +}
 +EXPORT_SYMBOL(pvd_get_by_index);
-+
-+/**
-+ *	netpvd_get_name - get a pvd name, knowing its pvdindex.
-+ *	@net: network namespace
-+ *	@pvdname: a pointer to the buffer where the name will be stored.
-+ *	@pvdindex: the pvdindex of the pvd to get the name from.
-+ *
-+ *	The use of raw_seqcount_begin() and cond_resched() before
-+ *	retrying is required as we want to give the writers a chance
-+ *	to complete when CONFIG_PREEMPT is not set.
-+ */
-+int netpvd_get_name(struct net *net, char *pvdname, u32 pvdindex)
-+{
-+	struct net_pvd *pvd;
-+	unsigned int seq;
-+
-+retry:
-+	seq = raw_seqcount_begin(&pvd_rename_seq);
-+	read_lock_bh(&pvd_base_lock);
-+	pvd = pvd_get_by_index_rcu(net, pvdindex);
-+	if (!pvd) {
-+		read_unlock_bh(&pvd_base_lock);
-+		return -ENODEV;
-+	}
-+
-+	strcpy(pvdname, pvd->name);
-+	read_unlock_bh(&pvd_base_lock);
-+	if (read_seqcount_retry(&pvd_rename_seq, seq)) {
-+		cond_resched();
-+		goto retry;
-+	}
-+
-+	return 0;
-+}
-+EXPORT_SYMBOL(netpvd_get_name);
 +
 +/**
 + *	pvd_new_index	-	allocate a pvdindex
@@ -3205,22 +3061,17 @@ index 000000000000..36a40782afb2
 + *	number.  The caller must hold the rtnl semaphore or the
 + *	pvd_base_lock to be sure it remains unique.
 + */
-+/* WQ: better assert RTNL right? */
++
 +static u32 pvd_new_index(struct net *net)
 +{
++	/*
++	 * WQ: theoretically there is possibility of deadloop, if all the index are already consumed
++	 */
 +	u32	pvdindex = net->pvdindex;
 +
-+	ASSERT_RTNL();
-+
-+	if (pvdindex >= MAXPVDINDEX) {
-+		pvdindex = 0;
-+	}
-+
 +	for (;;) {
-+		if (++pvdindex >= MAXPVDINDEX) {
-+			pvdindex = 0;
-+		}
-+
++		if (++pvdindex <=0 )
++			pvdindex = 1; 
 +		if (!__pvd_get_by_index(net, pvdindex))
 +			return(net->pvdindex = pvdindex);
 +	}
@@ -3267,15 +3118,9 @@ index 000000000000..36a40782afb2
 +
 +	printk("__register_pvd called: %s\n", pvdname);
 +
++	/* WQ: pvd reference is taken here */
 +	if ((pvd = pvd_get_by_name(net, pvdname, dev, lla)) != NULL) {
 +		return(pvd);
-+	}
-+
-+	/*
-+	 * Check if not already too many pvds defined
-+	 */
-+	if (net->first_free_pvd_ix == -1) {
-+		return(NULL);
 +	}
 +
 +	/*
@@ -3288,7 +3133,6 @@ index 000000000000..36a40782afb2
 +	}
 +	strcpy(pvd->name, pvdname);
 +	pvd->pvdindex = pvd_new_index(net);
-+	pvd->_index = -1;	/* index in the net->pvds array */
 +	pvd_net_set(pvd, net);
 +	/* 
 +	 * only remember dev for implicit pvd
@@ -3408,6 +3252,15 @@ index 000000000000..36a40782afb2
 +	}
 +}
 +
++void unregister_pvd(struct net_pvd *pvd)
++{
++	rtnl_lock();
++	__unregister_pvd(pvd);
++	rtnl_unlock();
++}
++EXPORT_SYMBOL(unregister_pvd);
++
++
 +/*
 + * pvd_check_lifetimes : timer callback checking expired rdnss/dnssl
 + * attached to registered pvds
@@ -3415,15 +3268,14 @@ index 000000000000..36a40782afb2
 +static void pvd_check_lifetimes(struct timer_list *t)
 +{
 +	struct net *net = from_timer(net, t, pvd_timer);
-+	struct net_pvd *pvd, *pvdnext = NULL;
++	struct net_pvd *pvd;
 +	unsigned long now = jiffies / HZ;
 +	int FlagUpdate;
 +	int i, j;
 +
 +	rtnl_lock();
-+
-+	for (pvd = net->first_used_pvd; pvd; pvd = pvdnext) {
-+		pvdnext = pvd->next;
++	rcu_read_lock();
++	list_for_each_entry_rcu(pvd, &net->pvd_base_head, pvd_list) {
 +
 +		write_lock_bh(&pvd_base_lock);
 +
@@ -3465,38 +3317,35 @@ index 000000000000..36a40782afb2
 +		}
 +		write_unlock_bh(&pvd_base_lock);
 +	}
++	rcu_read_unlock();
 +
 +	/*
-+	 * We rearm the timer for one more second if there are
++	 * We re-arm the timer for one more second if there are
 +	 * some pvd still registered
 +	 */
-+	if (net->first_used_pvd != NULL) {
++	if (!list_empty(&net->pvd_base_head)){
 +		mod_timer(&net->pvd_timer, jiffies + HZ);
 +	}
 +	rtnl_unlock();
 +}
 +
-+void unregister_pvd(struct net_pvd *pvd)
-+{
-+	rtnl_lock();
-+	__unregister_pvd(pvd);
-+	rtnl_unlock();
-+}
-+EXPORT_SYMBOL(unregister_pvd);
-+
-+
-+int __pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex){
++/*
++ * learnt all the implicit pvds (their index) received on a device
++ * explicit pvds are not attached any device and thus not considered here
++ * rtnl or pvd_base_lock needs to be held
++ */
++int __pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex_array){
 +	struct net_pvd *pvd;
-+	int i;
++	struct net *net = dev_net(dev);
++	int i = 0;
 +
-+	for (pvd = dev_net(dev)->first_used_pvd, i=0; 
-+	     pvd != NULL && i < MAXPVDINDEX; 
-+		 pvd = pvd->next, i++) {
-+		if(pvd->dev == dev)
-+			pvdindex[i] = pvd->pvdindex;
++	list_for_each_entry(pvd, &net->pvd_base_head, pvd_list){
++		if (pvd->dev == dev && i < MAXPVD) 
++			pvdindex_array[i++] = pvd->pvdindex;
 +	}
++
 +	/* return 0 if found at least one PvD received via that device, else -ENODEV */
-+	if (pvdindex[0]) {  // valid pvd->pvdindex is non-zero
++	if (pvdindex_array[0]) {  // valid pvd->pvdindex is non-zero
 +		return 0;
 +	} else {
 +		return -ENODEV;
@@ -3504,42 +3353,64 @@ index 000000000000..36a40782afb2
 +}
 +EXPORT_SYMBOL(__pvdindex_get_by_dev);
 +
-+int pvdindex_get_by_dev_rcu(struct net_device *dev, u32 *pvdindex) {
-+	return __pvdindex_get_by_dev(dev, pvdindex);
++/* 
++ * rcu read lock need to be taken
++ */
++int pvdindex_get_by_dev_rcu(struct net_device *dev, u32 *pvdindex_array) {
++	struct net_pvd *pvd;
++	struct net *net = dev_net(dev);
++	int i = 0;
++
++	list_for_each_entry_rcu(pvd, &net->pvd_base_head, pvd_list){
++		if (pvd->dev == dev && i < MAXPVD) 
++			pvdindex_array[i++] = pvd->pvdindex;
++	}
++
++	/* return 0 if found at least one PvD received via that device, else -ENODEV */
++	if (pvdindex_array[0]) {  // valid pvd->pvdindex is non-zero
++		return 0;
++	} else {
++		return -ENODEV;
++	}
 +}
 +EXPORT_SYMBOL(pvdindex_get_by_dev_rcu);
 +
-+int pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex) {
++int pvdindex_get_by_dev(struct net_device *dev, u32 *pvdindex_array) {
 +	int ret;
-+	read_lock(&pvd_base_lock);
-+	ret = pvdindex_get_by_dev_rcu(dev, pvdindex);
-+	read_unlock(&pvd_base_lock);
++	rcu_read_lock();
++	ret = pvdindex_get_by_dev_rcu(dev, pvdindex_array);
++	rcu_read_unlock();
 +	return ret;
 +}
 +EXPORT_SYMBOL(pvdindex_get_by_dev);
 +
++
++/*
++ * device event handler
++ */
 +static int pvd_netdev_event(struct notifier_block *this, unsigned long event, void *ptr)
 +{
 +	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 +	struct net *net = dev_net(dev);
 +	struct net_pvd *pvd;
-+	u32 pvdindex[MAXPVDINDEX] = {0};
++	u32 pvdindex_array[MAXPVD] = {0};
 +	u32 pidx;
 +	int i;
 +
 +	switch (event) {
 +		case NETDEV_UNREGISTER:
 +		case NETDEV_UNREGISTER_FINAL:
-+			if (pvdindex_get_by_dev(dev, pvdindex)==0) {
-+				for(i = 0; i < MAXPVDINDEX; i++){
-+					pidx = pvdindex[i];
++			if (pvdindex_get_by_dev(dev, pvdindex_array)==0) {
++				for(i = 0; i < MAXPVD; i++){
++					pidx = pvdindex_array[i];
 +					if (pidx) {
 +						pvd = pvd_get_by_index(net, pidx);
 +						if (pvd != NULL) {
-+							dev_put(pvd->dev);
++							if (pvd->dev != NULL)
++								dev_put(pvd->dev);
 +							pvd->dev = NULL;
 +							pvd_put(pvd);
-+							// unregister_pvd(pvd);
++							unregister_pvd(pvd);
 +						}
 +					}
 +					else {  // won't be any valid pvdindex afterward
@@ -3580,9 +3451,8 @@ index 000000000000..36a40782afb2
 +		goto out;
 +#endif
 +
-+	/* the following netdevice event handler causes kernel panic */
-+	// if (register_netdevice_notifier(&pvd_netdev_notifier))
-+	//	goto out;
++	if (register_netdevice_notifier(&pvd_netdev_notifier))
++		goto out;
 +
 +	pvd_boot_phase = 0;
 +
@@ -3683,7 +3553,7 @@ index 93066bd0305a..c53dd523c078 100644
 +EXPORT_SYMBOL(addr6tostr);
 \ No newline at end of file
 diff --git a/net/ipv6/addrconf.c b/net/ipv6/addrconf.c
-index 2547222589fe..2036096e612e 100644
+index 2547222589fe..e3513174458a 100644
 --- a/net/ipv6/addrconf.c
 +++ b/net/ipv6/addrconf.c
 @@ -82,6 +82,11 @@
@@ -3778,7 +3648,7 @@ index 2547222589fe..2036096e612e 100644
 +	if (rtnl_is_locked()) {
 +		pvd_migrate_addr_rtnl(pvd, ifa);
 +	} else {
-+		printk("%s rtnl not locked, called pvd_migrate_addr()/n", __func__);
++		printk("%s rtnl not locked, called pvd_migrate_addr()\n", __func__);
 +		pvd_migrate_addr(pvd, ifa);
 +	}
 +#endif
@@ -4454,7 +4324,7 @@ index b240f24a6e52..5a4a87834d0f 100644
  				goto again;
  			if (!ipv6_prefix_equal(&saddr, &r->src.addr,
 diff --git a/net/ipv6/ip6_fib.c b/net/ipv6/ip6_fib.c
-index 217683d40f12..fafe61db8ed6 100644
+index 217683d40f12..9546354b5d00 100644
 --- a/net/ipv6/ip6_fib.c
 +++ b/net/ipv6/ip6_fib.c
 @@ -24,6 +24,7 @@
@@ -4476,7 +4346,18 @@ index 217683d40f12..fafe61db8ed6 100644
  static struct kmem_cache *fib6_node_kmem __read_mostly;
  
  struct fib6_cleaner {
-@@ -2222,10 +2227,21 @@ static int ipv6_route_seq_show(struct seq_file *seq, void *v)
+@@ -312,7 +317,9 @@ struct dst_entry *fib6_rule_lookup(struct net *net, struct flowi6 *fl6,
+ 		rt = net->ipv6.ip6_null_entry;
+ 		dst_hold(&rt->dst);
+ 	}
+-
++	// char sAddr[64];
++	// printk("%s: pvd %s, dev: %s, gateway: %s", __func__, (rt->rt6i_pvd != NULL)?((struct net_pvd *) rt->rt6i_pvd)->name : "<no pvd>",
++	// rt->dst->dev->name, addr6tostr(rt->rt6i_gateway, sAddr));
+ 	return &rt->dst;
+ }
+ 
+@@ -2222,10 +2229,21 @@ static int ipv6_route_seq_show(struct seq_file *seq, void *v)
  	else
  		seq_puts(seq, "00000000000000000000000000000000");
  
@@ -5102,7 +4983,7 @@ index 98f61fcb9108..969a4a893d74 100644
  
  	nat = nf_ct_nat_ext_add(ct);
 diff --git a/net/ipv6/route.c b/net/ipv6/route.c
-index a560fb1d0230..0a7d64c3f95a 100644
+index a560fb1d0230..278b9db60758 100644
 --- a/net/ipv6/route.c
 +++ b/net/ipv6/route.c
 @@ -36,6 +36,7 @@
@@ -5169,7 +5050,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  		if (oif) {
  			if (dev->ifindex == oif)
  				return sprt;
-@@ -713,7 +743,7 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
+@@ -713,15 +743,19 @@ static struct rt6_info *find_match(struct rt6_info *rt, int oif, int strict,
  static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  				     struct rt6_info *leaf,
  				     struct rt6_info *rr_head,
@@ -5178,7 +5059,8 @@ index a560fb1d0230..0a7d64c3f95a 100644
  				     bool *do_rr)
  {
  	struct rt6_info *rt, *match, *cont;
-@@ -722,6 +752,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+ 	int mpri = -1;
+-
  	match = NULL;
  	cont = NULL;
  	for (rt = rr_head; rt; rt = rcu_dereference(rt->dst.rt6_next)) {
@@ -5190,7 +5072,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -732,6 +767,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -732,6 +766,11 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  
  	for (rt = leaf; rt && rt != rr_head;
  	     rt = rcu_dereference(rt->dst.rt6_next)) {
@@ -5202,7 +5084,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  		if (rt->rt6i_metric != metric) {
  			cont = rt;
  			break;
-@@ -743,14 +783,20 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
+@@ -743,14 +782,20 @@ static struct rt6_info *find_rr_leaf(struct fib6_node *fn,
  	if (match || !cont)
  		return match;
  
@@ -5225,7 +5107,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  {
  	struct rt6_info *leaf = rcu_dereference(fn->leaf);
  	struct rt6_info *match, *rt0;
-@@ -777,7 +823,7 @@ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
+@@ -777,7 +822,7 @@ static struct rt6_info *rt6_select(struct net *net, struct fib6_node *fn,
  	if (fn->fn_bit != key_plen)
  		return net->ipv6.ip6_null_entry;
  
@@ -5234,7 +5116,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  			     &do_rr);
  
  	if (do_rr) {
-@@ -806,7 +852,7 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
+@@ -806,7 +851,7 @@ static bool rt6_is_gw_or_nonexthop(const struct rt6_info *rt)
  
  #ifdef CONFIG_IPV6_ROUTE_INFO
  int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
@@ -5243,7 +5125,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  {
  	struct net *net = dev_net(dev);
  	struct route_info *rinfo = (struct route_info *) opt;
-@@ -815,6 +861,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -815,6 +860,11 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  	unsigned long lifetime;
  	struct rt6_info *rt;
  
@@ -5255,7 +5137,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	if (len < sizeof(struct route_info)) {
  		return -EINVAL;
  	}
-@@ -861,12 +912,30 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
+@@ -861,12 +911,30 @@ int rt6_route_rcv(struct net_device *dev, u8 *opt, int len,
  		rt = NULL;
  	}
  
@@ -5286,7 +5168,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  
  	if (rt) {
  		if (!addrconf_finite_timeout(lifetime))
-@@ -921,16 +990,20 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
+@@ -921,16 +989,20 @@ static struct rt6_info *ip6_pol_route_lookup(struct net *net,
  {
  	struct rt6_info *rt, *rt_cache;
  	struct fib6_node *fn;
@@ -5308,7 +5190,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  		if (rt->rt6i_nsiblings && fl6->flowi6_oif == 0)
  			rt = rt6_multipath_select(rt, fl6,
  						  fl6->flowi6_oif, flags);
-@@ -1653,6 +1726,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1653,6 +1725,7 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	struct fib6_node *fn, *saved_fn;
  	struct rt6_info *rt, *rt_cache;
  	int strict = 0;
@@ -5316,12 +5198,15 @@ index a560fb1d0230..0a7d64c3f95a 100644
  
  	strict |= flags & RT6_LOOKUP_F_IFACE;
  	strict |= flags & RT6_LOOKUP_F_IGNORE_LINKSTATE;
-@@ -1667,8 +1741,12 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
+@@ -1667,8 +1740,15 @@ struct rt6_info *ip6_pol_route(struct net *net, struct fib6_table *table,
  	if (fl6->flowi6_flags & FLOWI_FLAG_SKIP_NH_OIF)
  		oif = 0;
  
 +#ifdef	CONFIG_NETPVD
 +	pvd = fl6->pvd;
++	// char sAddr[64];
++	// printk("%s: PvD %s, saddr %s, daddr %s\n", __func__, pvd ? ((struct net_pvd *) pvd)->name : "<no pvd>",
++	// addr6tostr(fl6->saddr.s6_addr, sAddr), addr6tostr(fl6->daddr.s6_addr, sAddr));
 +#endif
 +
  redo_rt6_select:
@@ -5330,7 +5215,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	if (rt->rt6i_nsiblings)
  		rt = rt6_multipath_select(rt, fl6, oif, strict);
  	if (rt == net->ipv6.ip6_null_entry) {
-@@ -1884,6 +1962,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
+@@ -1884,6 +1964,12 @@ struct dst_entry *ip6_route_output_flags(struct net *net, const struct sock *sk,
  	    (fl6->flowi6_oif && any_src))
  		flags |= RT6_LOOKUP_F_IFACE;
  
@@ -5343,7 +5228,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	if (!any_src)
  		flags |= RT6_LOOKUP_F_HAS_SADDR;
  	else if (sk)
-@@ -2756,12 +2840,34 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg,
+@@ -2756,12 +2842,34 @@ static struct rt6_info *ip6_route_info_create(struct fib6_config *cfg,
  
  	cfg->fc_nlinfo.nl_net = dev_net(dev);
  
@@ -5378,7 +5263,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	if (rt)
  		dst_release_immediate(&rt->dst);
  
-@@ -3147,7 +3253,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
+@@ -3147,7 +3255,9 @@ static struct rt6_info *rt6_add_route_info(struct net *net,
  	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
  	cfg.fc_dst = *prefix;
  	cfg.fc_gateway = *gwaddr;
@@ -5389,7 +5274,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	/* We should treat it as a default route if prefix length is 0. */
  	if (!prefixlen)
  		cfg.fc_flags |= RTF_DEFAULT;
-@@ -3198,6 +3306,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
+@@ -3198,6 +3308,9 @@ struct rt6_info *rt6_add_dflt_router(const struct in6_addr *gwaddr,
  	};
  
  	cfg.fc_gateway = *gwaddr;
@@ -5399,7 +5284,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  
  	if (!ip6_route_add(&cfg, NULL)) {
  		struct fib6_table *table;
-@@ -3366,6 +3477,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
+@@ -3366,6 +3479,7 @@ static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff
  
  struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  				    const struct in6_addr *addr,
@@ -5407,7 +5292,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  				    bool anycast)
  {
  	u32 tb_id;
-@@ -3383,6 +3495,15 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
+@@ -3383,6 +3497,15 @@ struct rt6_info *addrconf_dst_alloc(struct inet6_dev *idev,
  	rt->dst.input = ip6_input;
  	rt->dst.output = ip6_output;
  	rt->rt6i_idev = idev;
@@ -5423,7 +5308,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  
  	rt->rt6i_protocol = RTPROT_KERNEL;
  	rt->rt6i_flags = RTF_UP | RTF_NONEXTHOP;
-@@ -3680,6 +3801,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
+@@ -3680,6 +3803,26 @@ static int rtm_to_fib6_config(struct sk_buff *skb, struct nlmsghdr *nlh,
  			goto errout;
  	}
  
@@ -5450,7 +5335,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  	if (tb[RTA_EXPIRES]) {
  		unsigned long timeout = addrconf_timeout_fixup(nla_get_u32(tb[RTA_EXPIRES]), HZ);
  
-@@ -4142,7 +4283,7 @@ static int rt6_fill_node(struct net *net,
+@@ -4142,7 +4285,7 @@ static int rt6_fill_node(struct net *net,
  				goto nla_put_failure;
  	} else if (dst) {
  		struct in6_addr saddr_buf;
@@ -5459,7 +5344,7 @@ index a560fb1d0230..0a7d64c3f95a 100644
  		    nla_put_in6_addr(skb, RTA_PREFSRC, &saddr_buf))
  			goto nla_put_failure;
  	}
-@@ -4197,6 +4338,17 @@ static int rt6_fill_node(struct net *net,
+@@ -4197,6 +4340,17 @@ static int rt6_fill_node(struct net *net,
  	if (nla_put_u8(skb, RTA_PREF, IPV6_EXTRACT_PREF(rt->rt6i_flags)))
  		goto nla_put_failure;
  
